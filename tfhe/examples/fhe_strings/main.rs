@@ -11,7 +11,7 @@
 use clap::Parser;
 mod ciphertext;
 
-use tfhe::{generate_keys, set_server_key, ConfigBuilder};
+use tfhe::{generate_keys, set_server_key, ConfigBuilder, prelude::FheDecrypt};
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -38,6 +38,29 @@ fn main() {
 	let fhe_string = ciphertext::FheString::encrypt(&clear_string, &client_key);
 	let dec_string = fhe_string.decrypt(&client_key);
 	println!("Start string: {dec_string}");
+
+	let fhe_string_len = fhe_string.len();
+	let dec_int: u32 = fhe_string_len.decrypt(&client_key);
+	println!("Len string: {dec_string}");
+	assert_eq!(dec_int, 4);
+
+	
+	let fhe_is_empty = fhe_string.is_empty();
+	let dec_bool = fhe_is_empty.decrypt(&client_key);
+	println!("Empty string: {dec_bool}");
+	assert_eq!(dec_bool, false);
+
+
+	let fhe_empty_string = ciphertext::FheString::encrypt_without_padding(&"", &client_key);
+	let fhe_is_empty = fhe_empty_string.is_empty();
+	let dec_bool = fhe_is_empty.decrypt(&client_key);
+	println!("Empty empty string: {dec_bool}");
+	assert_eq!(dec_bool, true);
+
+	let fhe_string_len = fhe_empty_string.len();
+	let dec_int: u32 = fhe_string_len.decrypt(&client_key);
+	println!("Len empty string: {dec_string}");
+	assert_eq!(dec_int, 0);
 
 	let fhe_string_upper = fhe_string.to_upper();
 	let dec_string = fhe_string_upper.decrypt(&client_key);

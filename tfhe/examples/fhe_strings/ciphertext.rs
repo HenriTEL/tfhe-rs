@@ -9,8 +9,8 @@ use std::iter;
 // - do not provide a from_blocks primitives as it would be easy to misuse
 // - a new function should be enough to construct the type at encryption time with a client key
 // see for example tfhe/src/integer/ciphertext/mod.rs to see how Integer RadixCiphertext are built to give access to their content for use by algorithms.
-use tfhe::prelude::*;
-use tfhe::{ ClientKey, FheUint8};
+use tfhe::{prelude::*, FheBool};
+use tfhe::{ ClientKey, FheUint8, FheUint32};
 
 pub type FheAsciiChar = FheUint8;
 pub struct FheString {
@@ -25,7 +25,10 @@ impl FheString {
         assert!(clear_str.is_ascii(),
             "The input string must only contain ascii characters"
         );
-        let nb_zeros = clear_str.len() % PADDING_BLOCK_LEN;
+        let mut nb_zeros = clear_str.len() % PADDING_BLOCK_LEN;
+        if clear_str.len() == 0 {
+            nb_zeros = PADDING_BLOCK_LEN;
+        }
 
         let fhe_bytes: Vec<FheUint8> = clear_str
             .bytes()
@@ -41,6 +44,10 @@ impl FheString {
         assert!(clear_str.is_ascii(),
             "The input string must only contain ascii characters"
         );
+        // FHE empty strings are represented as a vec with a single encrypted null byte
+        if clear_str.is_empty() {
+            return Self { bytes: vec![FheUint8::encrypt(0 as u8, client_key)] }
+        }
 
         let fhe_bytes: Vec<FheUint8> = clear_str
             .bytes()
@@ -58,6 +65,23 @@ impl FheString {
             .take_while(|b| *b != 0)
             .collect();
         String::from_utf8(ascii_bytes).unwrap()
+    }
+
+    pub fn len(&self) -> FheUint32 {
+        let first_byte = self.bytes.first().unwrap();
+        let mut res = FheUint32::cast_from(first_byte ^ first_byte); // Init res to 0
+        let mut prev_null = first_byte.ne(first_byte); // Init prev_null to false
+        for byte in self.bytes.iter() {
+            let is_null = byte.eq(0);
+            res += FheUint32::cast_from(!(is_null | prev_null));
+            prev_null = byte.eq(0);
+        }
+        res
+    }
+
+    pub fn is_empty(&self) -> FheBool {
+        let first_byte = self.bytes.first().unwrap();
+        FheUint8::eq(first_byte, 0)
     }
 
     pub fn to_upper(&self) -> Self {
