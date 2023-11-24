@@ -10,6 +10,7 @@
 
 use clap::Parser;
 mod ciphertext;
+mod client_key;
 
 use tfhe::{generate_keys, set_server_key, ConfigBuilder, prelude::FheDecrypt};
 
@@ -33,10 +34,12 @@ fn main() {
 
 	let config = ConfigBuilder::default().build();
 	let (client_key, server_key) = generate_keys(config);
+	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 8 as u8);
+	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0 as u8);
 	set_server_key(server_key);
 
-	let fhe_string = ciphertext::FheString::encrypt(&clear_string, &client_key);
-	let dec_string = fhe_string.decrypt(&client_key);
+	let fhe_string = str_client_key.encrypt(&clear_string);
+	let dec_string = str_client_key.decrypt(&fhe_string);
 	println!("Start string: {dec_string}");
 
 	let fhe_string_len = fhe_string.len();
@@ -51,7 +54,7 @@ fn main() {
 	assert_eq!(dec_bool, false);
 
 
-	let fhe_empty_string = ciphertext::FheString::encrypt_without_padding(&"", &client_key);
+	let fhe_empty_string = str_nopad_client_key.encrypt(&"");
 	let fhe_is_empty = fhe_empty_string.is_empty();
 	let dec_bool = fhe_is_empty.decrypt(&client_key);
 	println!("Empty empty string: {dec_bool}");
@@ -63,12 +66,12 @@ fn main() {
 	assert_eq!(dec_int, 0);
 
 	let fhe_string_upper = fhe_string.to_upper();
-	let dec_string = fhe_string_upper.decrypt(&client_key);
+	let dec_string = str_client_key.decrypt(&fhe_string_upper);
 	println!("Upper string: {dec_string}");
 	assert_eq!(dec_string, "ELO?");
 
-	let fhe_string_lower = fhe_string_upper.to_lower();
-	let dec_string = fhe_string_lower.decrypt(&client_key);
+	let fhe_string_lower = &fhe_string_upper.to_lower();
+	let dec_string = str_client_key.decrypt(fhe_string_lower);
 	println!("Lower string: {dec_string}");
 	assert_eq!(dec_string, "elo?");
     
