@@ -8,53 +8,112 @@
 // - do not provide a from_blocks primitives as it would be easy to misuse
 // - a new function should be enough to construct the type at encryption time with a client key
 // see for example tfhe/src/integer/ciphertext/mod.rs to see how Integer RadixCiphertext are built to give access to their content for use by algorithms.
-use tfhe::{prelude::*, FheBool};
+use tfhe::{prelude::*, FheBool, ClientKey};
 use tfhe::{ FheUint8, FheUint32};
 
-pub type FheAsciiChar = FheUint8;
-pub struct FheString {
-    pub bytes: Vec<FheAsciiChar>,
+pub const ASCII_WHITESPACES:  [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
+pub const UP_LOW_DISTANCE: u8 = 32;
+
+
+pub struct FheAsciiChar {
+    pub byte: FheUint8,
 }
 
-pub const UP_LOW_DISTANCE: u8 = 32;
+impl FheAsciiChar {
+
+	pub fn encrypt(clear_byte: u8, key: &ClientKey) -> Self {
+		Self { byte: FheUint8::encrypt(clear_byte, key) }
+	}
+
+    pub fn is_whitespace(&self) -> FheBool {
+        ASCII_WHITESPACES.iter()
+            .map(|w| self.byte.eq(*w))
+            .reduce(|acc, e| acc | e)
+            .unwrap()
+    }
+
+    pub fn eq(&self , rhs: Self) -> FheBool {
+        self.byte.eq(&rhs.byte)
+    }
+
+    pub fn ne(&self , rhs: Self) -> FheBool {
+        self.byte.ne(&rhs.byte)
+    }
+
+    fn to_upper(&self) -> Self {
+        Self {
+            byte: &self.byte - FheUint8::cast_from(self.byte.gt(96) & self.byte.lt(123)) * UP_LOW_DISTANCE
+        }
+    }
+    
+    fn to_lower(&self) -> Self {
+        Self {
+            byte: &self.byte + FheUint8::cast_from(self.byte.gt(64) & self.byte.lt(91)) * UP_LOW_DISTANCE
+        }
+    }
+
+}
+
+
+impl CastFrom<FheAsciiChar> for FheUint32
+{
+    fn cast_from(input: FheAsciiChar) -> Self {
+        Self::cast_from(input.byte)
+    }
+}
+
+pub struct FheString {
+    pub chars: Vec<FheAsciiChar>,
+}
 
 impl FheString {
 
     pub fn len(&self) -> FheUint32 {
-        let first_byte = self.bytes.first().unwrap();
-        let mut res = FheUint32::cast_from(first_byte ^ first_byte); // Init res to 0
-        let mut prev_null = first_byte.ne(first_byte); // Init prev_null to false
-        for byte in self.bytes.iter() {
-            let is_null = byte.eq(0);
+        let mut res = FheUint32::encrypt_trivial(0);
+        let mut prev_null = FheBool::encrypt_trivial(false);
+        for char in self.chars.iter() {
+            let is_null = char.byte.eq(0);
             res += FheUint32::cast_from(!(is_null | prev_null));
-            prev_null = byte.eq(0);
+            prev_null = char.byte.eq(0);
         }
         res
     }
 
     pub fn is_empty(&self) -> FheBool {
-        let first_byte = self.bytes.first().unwrap();
-        FheUint8::eq(first_byte, 0)
+        let first_byte = self.chars.first().unwrap();
+        FheUint8::eq(&first_byte.byte, 0)
     }
 
     pub fn to_upper(&self) -> Self {
         Self {
-            bytes: self.bytes.iter().map(to_upper).collect(),
+            chars: self.chars.iter().map(|c| c.to_upper()).collect(),
         }
     }
 
     pub fn to_lower(&self) -> Self {
         Self {
-            bytes: self.bytes.iter().map(to_lower).collect(),
+            chars: self.chars.iter()
+                    .map(|c| c.to_lower())
+                    .collect(),
         }
     }
-}
 
+    pub fn trim_end(&self) -> Self {
+        let mut new_bytes: Vec<FheUint8> = vec![];
+        let fhe_255 = FheUint8::try_encrypt_trivial(255_u8).unwrap();
+        let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
+        for c in self.chars.iter().rev() {
+            let must_zero =  prev_whitespace & c.is_whitespace();
+            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_255);
+            new_bytes.push(new_byte);
+            prev_whitespace = c.is_whitespace();
+        }
 
-fn to_upper(c: &FheUint8) -> FheUint8 {
-    c - FheUint8::cast_from(c.gt(96) & c.lt(123)) * UP_LOW_DISTANCE
-}
-
-fn to_lower(c: &FheUint8) -> FheUint8 {
-    c + FheUint8::cast_from(c.gt(64) & c.lt(91)) * UP_LOW_DISTANCE
+        Self {
+            chars: new_bytes.iter()
+                        .rev()
+                        .map(|b|FheAsciiChar { byte: b.to_owned() })
+                        .collect()
+        }
+    }
 }

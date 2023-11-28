@@ -2,9 +2,9 @@ use std::iter;
 
 use concrete_csprng::seeders::Seed;
 
-use tfhe::{prelude::*, FheUint8, ClientKey, Config};
+use tfhe::{prelude::*, ClientKey, Config};
 
-use crate::ciphertext::FheString;
+use crate::ciphertext::{FheString, FheAsciiChar};
 // use keys::{IntegerClientKey, IntegerConfig};
 // use tfhe::integers::keys::IntegerConfig;
 // use tfhe::keys::IntegerClientKey;
@@ -34,20 +34,20 @@ impl StringClientKey {
 			0 => clear_str.is_empty() as usize, // Empty non-padded strings are represented as ['\0']
 			_ => clear_str.len() % self.padding as usize,
 		};
-        let fhe_bytes: Vec<FheUint8> = clear_str
+        let fhe_chars: Vec<FheAsciiChar> = clear_str
             .bytes()
             .chain(iter::repeat(0).take(nb_zeros))
-            .map(|byte| FheUint8::encrypt(byte, &self.key))
+            .map(|byte| FheAsciiChar::encrypt(byte, &self.key))
             .collect();
 
-		FheString { bytes: fhe_bytes }
+		FheString { chars: fhe_chars }
     }
 
     // TODO check the use of &FheString instead of FheString
 	pub fn decrypt(&self, fhe_string: &FheString) -> String {
-        let ascii_bytes: Vec<u8> = fhe_string.bytes
+        let ascii_bytes: Vec<u8> = fhe_string.chars
             .iter()
-            .map(|fhe_byte| fhe_byte.decrypt(&self.key))
+            .map(|fhe_byte| fhe_byte.byte.decrypt(&self.key))
             .take_while(|byte| *byte != 0)
             .collect();
         String::from_utf8(ascii_bytes).unwrap()
