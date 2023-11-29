@@ -12,7 +12,8 @@ use clap::Parser;
 mod ciphertext;
 mod client_key;
 
-use tfhe::{generate_keys, set_server_key, ConfigBuilder, prelude::FheDecrypt, FheUint8};
+use tfhe::prelude::*;
+use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint8};
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -43,15 +44,23 @@ fn main() {
 	println!("Start string: '{dec_string}'");
 
 
-	let fhe_op = fhe_string.trim_start();
-	let dec_string = str_client_key.decrypt(&fhe_op);
-	println!("Trim start string: '{dec_string}'");
+	// let fhe_op = fhe_string + str_client_key.encrypt("_added");
+	// let dec_string = str_client_key.decrypt(&fhe_op);
+	// println!("Concat: '{dec_string}'");
 
-	let mut fhe_op = fhe_string.trim();
-	let dec_string = str_client_key.decrypt(&fhe_op);
-	println!("Trim: '{dec_string}'");
+	// let fhe_op = fhe_string.trim_start();
+	// let dec_string = str_client_key.decrypt(&fhe_op);
+	// println!("Trim start string: '{dec_string}'");
 
-	let fhe_op = fhe_op.repeat(2);
+	// let fhe_op = fhe_string.trim();
+	// let dec_string = str_client_key.decrypt(&fhe_op);
+	// println!("Trim: '{dec_string}'");
+
+	// let fhe_op = fhe_op.repeat_clear_n(2);
+	// let dec_string = str_client_key.decrypt(&fhe_op);
+	// println!("Repeat clear: '{dec_string}'");
+
+	let fhe_op = fhe_string.repeat(FheUint8::encrypt(2_u8, &client_key));
 	let dec_string = str_client_key.decrypt(&fhe_op);
 	println!("Repeat: '{dec_string}'");
 

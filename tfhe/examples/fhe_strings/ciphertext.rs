@@ -76,6 +76,7 @@ impl FheString {
             res += FheUint32::cast_from(!(is_null | prev_null));
             prev_null = char.byte.eq(0);
         }
+
         res
     }
 
@@ -133,8 +134,7 @@ impl FheString {
             chars: new_bytes.iter()
                         .map(|b|FheAsciiChar { byte: b.to_owned() })
                         .collect()
-        }
-        
+        } 
     }
 
     pub fn trim(&self) -> Self {
@@ -147,9 +147,62 @@ impl FheString {
             // TODO I assume that clone() is cryptographically safe here, i.e. not a bit to bit clone
             new_chars.extend(self.chars.clone())
         }
+
         Self {
             chars: new_chars
         }
     }
 
+    // We build a vector with a lenght of the maximum possible repetitions.
+    // Characters of string repetitions that goes beyond n are nullified.
+    pub fn repeat(&self, n: FheUint8) -> Self {
+        let mut new_chars: Vec<FheAsciiChar> = vec![];
+        let mut rem = n.clone();
+        // TODO loop until u8::MAX
+        for _ in 0..8 {
+            let operand = FheUint8::cast_from(rem.gt(0));
+            // TODO I assume that clone() is cryptographically safe here, i.e. not a bit to bit clone
+            new_chars.extend(self.chars.clone().iter().map(|c| FheAsciiChar { byte: c.byte.to_owned() * &operand }));
+            rem = rem.clone() - FheUint8::cast_from(rem.gt(0));
+        }
+
+
+        Self {
+            chars: new_chars
+        }
+    }
 }
+
+impl std::ops::Add for FheString {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let mut new_chars: Vec<FheAsciiChar> = vec![];
+        new_chars.extend(self.chars.clone());
+        new_chars.extend(other.chars.clone());
+
+        Self {
+            chars: new_chars
+        }
+    }
+}
+
+// impl PartialEq for FheString {
+//     fn eq(&self, other: &Self) -> bool {
+
+//         if self.chars.next() != other.chars.next() {
+
+//         }
+//         self.chars.iter().enumerate()
+//         .map(|i, char| char.byte == other[])
+//             .reduce(|acc, e| acc | e)
+//             .unwrap()
+//         self.value == other.value
+//     }
+// }
+
+// impl PartialOrd for FheString {
+//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//         self.value.partial_cmp(&other.value)
+//     }
+// }
