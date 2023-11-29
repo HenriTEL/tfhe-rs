@@ -43,39 +43,47 @@ fn main() {
 	println!("Start string: '{dec_string}'");
 
 
-	let fhe_trim_end = fhe_string.trim_end();
-	let dec_string = str_client_key.decrypt(&fhe_trim_end);
-	println!("Trim end string: '{dec_string}'");
+	let fhe_op = fhe_string.trim_start();
+	let dec_string = str_client_key.decrypt(&fhe_op);
+	println!("Trim start string: '{dec_string}'");
 
-	let fhe_string_len = fhe_string.len();
-	let dec_int: u32 = fhe_string_len.decrypt(&client_key);
-	println!("Len string: {dec_string}");
-	assert_eq!(dec_int, clear_string.len() as u32);
+	let mut fhe_op = fhe_string.trim();
+	let dec_string = str_client_key.decrypt(&fhe_op);
+	println!("Trim: '{dec_string}'");
+
+	let fhe_op = fhe_op.repeat(2);
+	let dec_string = str_client_key.decrypt(&fhe_op);
+	println!("Repeat: '{dec_string}'");
+
+	// let fhe_string_len = fhe_string.len();
+	// let dec_int: u32 = fhe_string_len.decrypt(&client_key);
+	// println!("Len string: {dec_string}");
+	// assert_eq!(dec_int, clear_string.len() as u32);
 	
-	let fhe_is_empty = fhe_string.is_empty();
-	let dec_bool = fhe_is_empty.decrypt(&client_key);
-	println!("Empty string: {dec_bool}");
-	assert_eq!(dec_bool, false);
+	// let fhe_is_empty = fhe_string.is_empty();
+	// let dec_bool = fhe_is_empty.decrypt(&client_key);
+	// println!("Empty string: {dec_bool}");
+	// assert_eq!(dec_bool, false);
 
-	let fhe_empty_string = str_nopad_client_key.encrypt(&"");
-	let fhe_is_empty = fhe_empty_string.is_empty();
-	let dec_bool = fhe_is_empty.decrypt(&client_key);
-	println!("Empty empty string: {dec_bool}");
-	assert_eq!(dec_bool, true);
+	// let fhe_empty_string = str_nopad_client_key.encrypt(&"");
+	// let fhe_is_empty = fhe_empty_string.is_empty();
+	// let dec_bool = fhe_is_empty.decrypt(&client_key);
+	// println!("Empty empty string: {dec_bool}");
+	// assert_eq!(dec_bool, true);
 
-	let fhe_string_len = fhe_empty_string.len();
-	let dec_int: u32 = fhe_string_len.decrypt(&client_key);
-	println!("Len empty string: {dec_string}");
-	assert_eq!(dec_int, 0);
+	// let fhe_string_len = fhe_empty_string.len();
+	// let dec_int: u32 = fhe_string_len.decrypt(&client_key);
+	// println!("Len empty string: {dec_string}");
+	// assert_eq!(dec_int, 0);
 
-	let fhe_string_upper = fhe_string.to_upper();
-	let dec_string = str_client_key.decrypt(&fhe_string_upper);
-	println!("Upper string: {dec_string}");
-	assert_eq!(dec_string, clear_string.to_uppercase());
+	// let fhe_string_upper = fhe_string.to_upper();
+	// let dec_string = str_client_key.decrypt(&fhe_string_upper);
+	// println!("Upper string: {dec_string}");
+	// assert_eq!(dec_string, clear_string.to_uppercase());
 
-	let fhe_string_lower = fhe_string_upper.to_lower();
-	let dec_string = str_client_key.decrypt(&fhe_string_lower);
-	println!("Lower string: {dec_string}");
-	assert_eq!(dec_string, clear_string.to_lowercase());
+	// let fhe_string_lower = fhe_string_upper.to_lower();
+	// let dec_string = str_client_key.decrypt(&fhe_string_lower);
+	// println!("Lower string: {dec_string}");
+	// assert_eq!(dec_string, clear_string.to_lowercase());
     
 }

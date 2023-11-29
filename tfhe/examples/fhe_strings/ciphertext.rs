@@ -14,7 +14,7 @@ use tfhe::{ FheUint8, FheUint32};
 pub const ASCII_WHITESPACES:  [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
 pub const UP_LOW_DISTANCE: u8 = 32;
 
-
+#[derive(Clone)]
 pub struct FheAsciiChar {
     pub byte: FheUint8,
 }
@@ -98,15 +98,16 @@ impl FheString {
         }
     }
 
+    // TODO merge common parts with trim_start()
     pub fn trim_end(&self) -> Self {
         let mut new_bytes: Vec<FheUint8> = vec![];
         let fhe_255 = FheUint8::try_encrypt_trivial(255_u8).unwrap();
         let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
         for c in self.chars.iter().rev() {
-            let must_zero =  prev_whitespace & c.is_whitespace();
+            let must_zero =  prev_whitespace.clone() & c.is_whitespace();
             let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_255);
             new_bytes.push(new_byte);
-            prev_whitespace = c.is_whitespace();
+            prev_whitespace = prev_whitespace & c.is_whitespace();
         }
 
         Self {
@@ -116,4 +117,39 @@ impl FheString {
                         .collect()
         }
     }
+
+    pub fn trim_start(&self) -> Self {
+        let mut new_bytes: Vec<FheUint8> = vec![];
+        let fhe_255 = FheUint8::try_encrypt_trivial(255_u8).unwrap();
+        let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
+        for c in self.chars.iter() {
+            let must_zero =  prev_whitespace.clone() & c.is_whitespace();
+            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_255);
+            new_bytes.push(new_byte);
+            prev_whitespace = prev_whitespace & c.is_whitespace();
+        }
+
+        Self {
+            chars: new_bytes.iter()
+                        .map(|b|FheAsciiChar { byte: b.to_owned() })
+                        .collect()
+        }
+        
+    }
+
+    pub fn trim(&self) -> Self {
+        self.trim_end().trim_start()
+    }
+
+    pub fn repeat_clear_n(&self, n: usize) -> Self {
+        let mut new_chars: Vec<FheAsciiChar> = vec![];
+        for _ in 0..n {
+            // TODO I assume that clone() is cryptographically safe here, i.e. not a bit to bit clone
+            new_chars.extend(self.chars.clone())
+        }
+        Self {
+            chars: new_chars
+        }
+    }
+
 }

@@ -30,6 +30,10 @@ impl StringClientKey {
         assert!(clear_str.is_ascii(),
             "The input string must only contain ascii characters"
         );
+        // '\0' is reseved to express an empty character slot
+        assert!(!clear_str.contains('\0'),
+            "The input string must not contain the NUL character '\\0'"
+        );  
 		let nb_zeros = match self.padding {
 			0 => clear_str.is_empty() as usize, // Empty non-padded strings are represented as ['\0']
 			_ => clear_str.len() % self.padding as usize,
@@ -48,7 +52,7 @@ impl StringClientKey {
         let ascii_bytes: Vec<u8> = fhe_string.chars
             .iter()
             .map(|fhe_byte| fhe_byte.byte.decrypt(&self.key))
-            .take_while(|byte| *byte != 0)
+            .filter(|byte| *byte != 0)
             .collect();
         String::from_utf8(ascii_bytes).unwrap()
     }
