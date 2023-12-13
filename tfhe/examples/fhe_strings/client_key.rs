@@ -2,9 +2,10 @@ use std::iter;
 
 use concrete_csprng::seeders::Seed;
 
+use log::info;
 use tfhe::{prelude::*, ClientKey, Config};
 
-use crate::ciphertext::{FheString, FheAsciiChar};
+use crate::ciphertext::{FheString, FheAsciiChar, PaddingOptions};
 // use keys::{IntegerClientKey, IntegerConfig};
 // use tfhe::integers::keys::IntegerConfig;
 // use tfhe::keys::IntegerClientKey;
@@ -36,15 +37,22 @@ impl StringClientKey {
         );  
 		let nb_zeros = match self.padding {
 			0 => clear_str.is_empty() as usize, // Empty non-padded strings are represented as ['\0']
-			_ => clear_str.len() % self.padding as usize,
+			_ => if clear_str.len() >= self.padding as usize {
+                    clear_str.len() % self.padding as usize
+                } else {
+                    self.padding as usize - clear_str.len()
+                }
 		};
-        let fhe_chars: Vec<FheAsciiChar> = clear_str
+        info!("Adding {nb_zeros} zeros.");
+        let chars: Vec<FheAsciiChar> = clear_str
             .bytes()
             .chain(iter::repeat(0).take(nb_zeros))
             .map(|byte| FheAsciiChar::encrypt(byte, &self.key))
             .collect();
+        let mut padding = PaddingOptions::default();
+        padding.end(self.padding > 0);
 
-		FheString { chars: fhe_chars }
+		FheString { chars, padding }
     }
 
     // TODO check the use of &FheString instead of FheString

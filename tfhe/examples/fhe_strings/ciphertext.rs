@@ -4,12 +4,21 @@
 // it is possible to have 0u8 earlier than the last char, this would allow the user to hide the actual length of the string that is encrypted
 
 
+use std::hash::BuildHasher;
+
+use log::{debug, info};
+use tfhe::integer::RadixCiphertext;
 // accessors should be made to be able to iterate easily on the inner vec both mutably and immutably
 // - do not provide a from_blocks primitives as it would be easy to misuse
 // - a new function should be enough to construct the type at encryption time with a client key
 // see for example tfhe/src/integer/ciphertext/mod.rs to see how Integer RadixCiphertext are built to give access to their content for use by algorithms.
-use tfhe::{prelude::*, FheBool, ClientKey};
+use tfhe::{prelude::*, FheBool, ClientKey, integer::ServerKey};
 use tfhe::{ FheUint8, FheUint32};
+
+// use crate::regex::execution::{Execution, LazyExecution};
+// use crate::regex::parser::{build_regex, RegexBuildOptions, RegExpr};
+// use crate::regex::engine::build_branches;
+use crate::regex::simple_engine::{SimpleEngine, MatchingOptions};
 
 pub const ASCII_WHITESPACES:  [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
 pub const UP_LOW_DISTANCE: u8 = 32;
@@ -62,8 +71,34 @@ impl CastFrom<FheAsciiChar> for FheUint32
     }
 }
 
+#[derive(Default, Debug, Copy, Clone)]
+pub struct PaddingOptions {
+    pub start: bool,
+    pub middle: bool,
+    pub end: bool,
+}
+
+impl PaddingOptions {
+    // Methods to set individual flags
+    pub fn start(&mut self, value: bool) -> &mut Self {
+        self.start = value;
+        self
+    }
+
+    pub fn middle(&mut self, value: bool) -> &mut Self {
+        self.middle = value;
+        self
+    }
+
+    pub fn end(&mut self, value: bool) -> &mut Self {
+        self.end = value;
+        self
+    }
+}
+
 pub struct FheString {
     pub chars: Vec<FheAsciiChar>,
+    pub padding: PaddingOptions,
 }
 
 impl FheString {
@@ -88,6 +123,7 @@ impl FheString {
     pub fn to_upper(&self) -> Self {
         Self {
             chars: self.chars.iter().map(|c| c.to_upper()).collect(),
+            padding: self.padding,
         }
     }
 
@@ -96,6 +132,7 @@ impl FheString {
             chars: self.chars.iter()
                     .map(|c| c.to_lower())
                     .collect(),
+            padding: self.padding,
         }
     }
 
@@ -115,7 +152,8 @@ impl FheString {
             chars: new_bytes.iter()
                         .rev()
                         .map(|b|FheAsciiChar { byte: b.to_owned() })
-                        .collect()
+                        .collect(),
+            padding: *self.padding.clone().end(true),
         }
     }
 
@@ -133,7 +171,8 @@ impl FheString {
         Self {
             chars: new_bytes.iter()
                         .map(|b|FheAsciiChar { byte: b.to_owned() })
-                        .collect()
+                        .collect(),
+            padding: *self.padding.clone().start(true),
         } 
     }
 
@@ -141,7 +180,7 @@ impl FheString {
         self.trim_end().trim_start()
     }
 
-    pub fn repeat_clear_n(&self, n: usize) -> Self {
+    pub fn repeat_clear(&self, n: usize) -> Self {
         let mut new_chars: Vec<FheAsciiChar> = vec![];
         for _ in 0..n {
             // TODO I assume that clone() is cryptographically safe here, i.e. not a bit to bit clone
@@ -149,7 +188,8 @@ impl FheString {
         }
 
         Self {
-            chars: new_chars
+            chars: new_chars,
+            padding: *self.padding.clone().middle(n > 0 && (self.padding.start | self.padding.end)),
         }
     }
 
@@ -166,27 +206,111 @@ impl FheString {
             rem = rem.clone() - FheUint8::cast_from(rem.gt(0));
         }
 
-
         Self {
-            chars: new_chars
+            chars: new_chars,
+            padding: *self.padding.clone().middle(self.padding.start | self.padding.end),
         }
     }
+
+    pub fn contains_clear(&self, pattern: &str) -> FheBool {
+        // let regex = build_regex(pattern, self.padding);
+        // info!("/{}/");
+        // let re = build_regex(pattern, self.padding, RegexBuildOptions::default());
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions::default();
+        se.has_match(self, &pattern.to_string(), match_options)
+
+    }
+
+    // pub fn starts_with_clear(&self, pattern: &str) -> Result<FheBool, Box<dyn std::error::Error>> {
+    //     let re = build_regex(pattern, self.padding, *RegexBuildOptions::default().sof(true));
+    //     self.has_match_clear(re)
+    // }
+
+    // pub fn ends_with_clear(&self, pattern: &str) -> Result<FheBool, Box<dyn std::error::Error>> {
+    //     let re = build_regex(pattern, self.padding, *RegexBuildOptions::default().eof(true));
+    //     self.has_match_clear(re)
+    // }
+
+    // pub fn eq_ignore_case(&self, other: Self) {
+    //     // TODO compute both to_lower in //
+    //     self.to_lower() == other.to_lower()
+    // }
+
+    // fn has_match_clear(
+    //     &self,
+    //     re: RegExpr,
+    // ) -> Result<FheBool, Box<dyn std::error::Error>> {
+    //     info!("Pattern: {:?}", re);
+    
+    //     let branches: Vec<LazyExecution> = (0..self.chars.len())
+    //         .flat_map(|i| build_branches(&self.chars, &re, i))
+    //         .map(|(lazy_branch_res, _)| lazy_branch_res)
+    //         .collect();
+    
+    //     let mut exec = Execution::new();
+    
+    //     let res = if branches.len() <= 1 {
+    //         branches
+    //             .get(0)
+    //             .map_or(exec.ct_false(), |branch| branch(&mut exec))
+    //             .0
+    //     } else {
+    //         branches[1..]
+    //             .iter()
+    //             .fold(branches[0](&mut exec), |res, branch| {
+    //                 let branch_res = branch(&mut exec);
+    //                 exec.ct_or(res, branch_res)
+    //             })
+    //             .0
+    //     };
+    //     info!(
+    //         "{} ciphertext operations, {} cache hits",
+    //         exec.ct_operations_count(),
+    //         exec.cache_hits(),
+    //     );
+    //     Ok(res)
+    // }
 }
+
 
 impl std::ops::Add for FheString {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        let mut new_chars: Vec<FheAsciiChar> = vec![];
-        new_chars.extend(self.chars.clone());
-        new_chars.extend(other.chars.clone());
+        let mut chars: Vec<FheAsciiChar> = vec![];
+        chars.extend(self.chars.clone());
+        chars.extend(other.chars.clone());
+        let padding: PaddingOptions = *PaddingOptions::default()
+        .start(self.padding.start)
+        .middle(self.padding.middle | self.padding.end | other.padding.start | other.padding.middle)
+        .end(other.padding.end);
 
         Self {
-            chars: new_chars
+            chars,
+            padding,
         }
     }
 }
 
+// fn build_regex(pattern: &str, padding: PaddingOptions) -> String {
+//     let mut regex: String = pattern.to_owned();
+//     if padding.middle {
+//         regex = pattern.chars()
+//                     .skip(1)
+//                     .map(|c| format!("\0*{c}"))
+//                     .collect::<Vec<String>>()
+//                     .join("");
+//     }
+//     if padding.start {
+//         regex = format!("\0*{regex}")
+//     }
+//     if padding.end {
+//         regex.extend("\0*".chars())
+//     }
+
+//     regex
+// }
 // impl PartialEq for FheString {
 //     fn eq(&self, other: &Self) -> bool {
 

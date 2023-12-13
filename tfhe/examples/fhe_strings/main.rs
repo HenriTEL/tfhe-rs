@@ -11,8 +11,11 @@
 use clap::Parser;
 mod ciphertext;
 mod client_key;
+mod regex;
 
-use tfhe::prelude::*;
+use env_logger::Env;
+use log::info;
+use tfhe::{prelude::*, ClientKey};
 use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint8};
 
 /// Simple program to greet a person
@@ -24,26 +27,54 @@ struct Args {
 	clear_string: Option<String>,
 
     /// A pattern to match against the string
-	#[arg(short, long)]
     pattern: Option<String>,
 }
 
 fn main() {
+    let env = Env::default().filter_or("RUST_LOG", "info");
+    env_logger::init_from_env(env);
+	info!("Start main");
     let args = Args::parse();
 	assert!(!args.clear_string.is_none(), "clear_string required");
 	let clear_string = args.clear_string.unwrap();
 
 	let config = ConfigBuilder::default().build();
-	let (client_key, server_key) = generate_keys(config);
-	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 8_u8);
-	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0_u8);
-	set_server_key(server_key);
+    let client_key = ClientKey::generate(config);
+	//  rayon::ThreadPoolBuilder::new()
+	// 	// .use_current_thread()
+	// 	.num_threads(1) // TODO remove
+	// 	.spawn_handler(|thread| {
+	// 		let server_key = client_key.generate_server_key();
+	// 		std::thread::spawn(move || {
+	// 			set_server_key(server_key.clone());
+	// 			thread.run()
+	// 		});
+	// 		Ok(())
+	// 	}
+	// ).build_global().unwrap();
+	set_server_key(client_key.generate_server_key());
+	info!("Generated server keys");
+	
 
-	let fhe_string = str_client_key.encrypt(&clear_string);
+	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 4_u8);
+	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0_u8);
+
+	let fhe_string = str_client_key.encrypt(&clear_string).trim().repeat_clear(2);
 	let dec_string = str_client_key.decrypt(&fhe_string);
 	println!("Start string: '{dec_string}'");
 
+	let pattern = args.pattern.unwrap();
+	let fhe_op = fhe_string.contains_clear(pattern.as_str());
+	let dec_bool = fhe_op.decrypt(&client_key);
+	println!("Contains: {dec_bool}");
 
+	// let fhe_op = fhe_string.starts_with_clear(pattern.as_str()).unwrap();
+	// let dec_bool = fhe_op.decrypt(&client_key);
+	// println!("Starts with: {dec_bool}");
+
+	// let fhe_op = fhe_string.ends_with_clear(pattern.as_str()).unwrap();
+	// let dec_bool = fhe_op.decrypt(&client_key);
+	// println!("Ends with: {dec_bool}");
 	// let fhe_op = fhe_string + str_client_key.encrypt("_added");
 	// let dec_string = str_client_key.decrypt(&fhe_op);
 	// println!("Concat: '{dec_string}'");
@@ -56,13 +87,13 @@ fn main() {
 	// let dec_string = str_client_key.decrypt(&fhe_op);
 	// println!("Trim: '{dec_string}'");
 
-	// let fhe_op = fhe_op.repeat_clear_n(2);
+	// let fhe_op = fhe_op.repeat_clear(2);
 	// let dec_string = str_client_key.decrypt(&fhe_op);
 	// println!("Repeat clear: '{dec_string}'");
 
-	let fhe_op = fhe_string.repeat(FheUint8::encrypt(2_u8, &client_key));
-	let dec_string = str_client_key.decrypt(&fhe_op);
-	println!("Repeat: '{dec_string}'");
+	// let fhe_op = fhe_string.repeat(FheUint8::encrypt(2_u8, &client_key));
+	// let dec_string = str_client_key.decrypt(&fhe_op);
+	// println!("Repeat: '{dec_string}'");
 
 	// let fhe_string_len = fhe_string.len();
 	// let dec_int: u32 = fhe_string_len.decrypt(&client_key);
