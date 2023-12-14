@@ -1,13 +1,13 @@
-use std::collections::{HashMap, HashSet, BTreeSet, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use log::info;
 use rayon::prelude::*;
 
 use tfhe::prelude::*;
-use tfhe::{FheBool, FheUint8};
+use tfhe::FheBool;
 
-use crate::ciphertext::{FheString, FheAsciiChar, PaddingOptions};
+use crate::ciphertext::{FheString, PaddingOptions};
 
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -97,36 +97,26 @@ impl SimpleEngine {
                 BitwiseParam::AndRes { l_res, r_res } => {
                     let bw_ex_id = BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() };
                     match self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)) {
-                        Some((result, depth)) => result.clone(),
+                        Some((result, _)) => result.clone(),
                         None => panic!("And res not found in cache"),
                     }
                 },
                 BitwiseParam::OrRes { l_res, r_res } => {
                     let bw_ex_id = BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() };
-                    info!("Looking for Or res");
                     self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)).unwrap().clone().0
                 },
                 BitwiseParam::EqRes(c_pos, p_id) => {
-                    info!("Looking for Eq res at {:?}", (*c_pos, *p_id));
                     self.eq_ops.get(&(*c_pos, *p_id)).unwrap().clone()
                 },
                 BitwiseParam::PatternMatchRes { c_pos, p_pos } => {
                     let ex_id = ExecutionId::PatternMatch { c_pos: *c_pos, p_pos: *p_pos };
                     
-                    let bw_param = match self.pm_ops.lock().unwrap().get(&ex_id) {
-                        Some(bw_param) => bw_param.clone(),
-                        None => panic!("Could not find PatternMatch at {}, {}", *c_pos, *p_pos),
-                    };
-                    info!("Looking for Pm res at {}, {}", *c_pos, *p_pos);
-                    info!("As {:?}", bw_param);
+                    let bw_param = self.pm_ops.lock().unwrap().get(&ex_id).unwrap().clone();
                     match bw_param {
                         BitwiseParam::EqRes(c_pos, p_id) => self.eq_ops.get(&(c_pos, p_id)).unwrap().clone(),
                         BitwiseParam::AndRes { l_res, r_res } => {
                             let bw_ex_id = BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() };
-                            match self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)) {
-                                Some((result, _)) => result.clone(),
-                                None => panic!("Pm(And) res not found in cache"),
-                            }
+                            self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)).unwrap().0.clone()
                         },
                         BitwiseParam::OrRes { l_res, r_res } => {
                             let bw_ex_id = BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() };
@@ -139,52 +129,25 @@ impl SimpleEngine {
         };
 
         let mut skipped_ops = vec![];
-        let mut i = self.bitwise_ops.lock().unwrap().len() - 1;
         for ops_vec in self.bitwise_ops.lock().unwrap().iter().rev() {
-            info!("####### Processing depth {i} #######");
-            for ops in ops_vec.iter().chain(skipped_ops.iter()) {
-                info!("ops: {:?}", ops);
-            }
-            i -= 1;
             skipped_ops = ops_vec.iter().chain(skipped_ops.iter())
                 .map( |bw_ex_id| {
-                    info!("---\n");
                     let ex_id = ExecutionId::BitwiseOp(bw_ex_id.clone());
                     if let Some((Some(_), _)) = self.cache.lock().unwrap().get(&ex_id) {
-                        info!("Cache hit.");
                         return vec![];
-                    }
-
-                    for (pm, bw) in self.pm_ops.lock().unwrap().clone().into_iter() {
-                        let bw_param = match bw_ex_id {
-                            BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
-                            BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
-                        };
-                        if bw == bw_param {
-                            info!("Trying to Resolve {:?}", pm);
-                            break
-                        }
                     }
                     
                     let result = match bw_ex_id {
                         BitwiseExecId::And { l_res, r_res } => {
-                            info!("Computing And...");
                             match (get_result(l_res), get_result(r_res)) {
                                 (Some(a), Some(b)) => Some(a & b),
-                                _ => {
-                                    info!("RES NOT FOUND");
-                                    None
-                                },
+                                _ => None,
                             }
                         },
                         BitwiseExecId::Or { l_res, r_res } => {
-                            info!("Computing Or...");
                             match (get_result(l_res), get_result(r_res)) {
                                 (Some(a), Some(b)) => Some(a | b),
-                                _ => {
-                                    info!("RES NOT FOUND");
-                                    None
-                                },
+                                _ => None,
                             }
                         },
                     };
@@ -201,34 +164,22 @@ impl SimpleEngine {
         };
         let mut prev_len = 1000;
         while prev_len > skipped_ops.len() {
-            info!("####### Processing again #######");
             prev_len = skipped_ops.len();
+            info!("Remaining ops: {prev_len}");
             skipped_ops = skipped_ops.iter()
                 .map( |bw_ex_id| {
                     let ex_id = ExecutionId::BitwiseOp(bw_ex_id.clone());
                     if let Some((Some(_), _)) = self.cache.lock().unwrap().get(&ex_id) {
                         return vec![];
                     }
-                    for (pm, bw) in self.pm_ops.lock().unwrap().clone().into_iter() {
-                        let bw_param = match bw_ex_id {
-                            BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
-                            BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
-                        };
-                        if bw == bw_param {
-                            info!("Trying to Resolve {:?}", pm);
-                            break
-                        }
-                    }
                     let result = match bw_ex_id {
                         BitwiseExecId::And { l_res, r_res } => {
-                            info!("Computing And...");
                             match (get_result(l_res), get_result(r_res)) {
                                 (Some(a), Some(b)) => Some(a & b),
                                 _ => None,
                             }
                         },
                         BitwiseExecId::Or { l_res, r_res } => {
-                            info!("Computing Or...");
                             match (get_result(l_res), get_result(r_res)) {
                                 (Some(a), Some(b)) => Some(a | b),
                                 _ => None,
@@ -267,32 +218,6 @@ impl SimpleEngine {
             }
             let depth = self.bitwise_ops.lock().unwrap().len();
             init_remain.push((0, 0, depth));
-            // for i in 0..=max_start {
-            //     init_remain.push((i, 0, depth));
-            // }
-        //     "0co0" 'co'
-        
-        // 2    0, 0 & (1, 1) | (1, 0)
-        // 3     1, 1 & (2, 1)
-        // 3     1, 0 & (2, 1) | (2, 0)
-        // 4      2, 1 & (3, 1)
-        // 4      2, 0 & (3, 1)
-        //    2, 0 = (2, c & 3, 1)
-        //    1, 0 = (1, c & 2, 1) | (1, \0 & 2, 0)
-        //    0, 0 = (0, c & 1, 1) | (0, \0 & 1, 0)
-                  
-// And {
-//     l_res: EqRes(1, c),
-//     r_res: PatternMatchRes { c_pos: 2, p_pos: 1 }
-// }, And { 
-//     l_res: EqRes(1, Zero), 
-//     r_res: PatternMatchRes { c_pos: 2, p_pos: 0 } 
-// }, And { 
-//     l_res: EqRes(2, c),
-//     r_res: PatternMatchRes { c_pos: 3, p_pos: 1 }
-// }}
-
-               
         }
         let mut remain: VecDeque<(usize, usize, usize)> = init_remain.into_iter().collect();
 
@@ -303,7 +228,6 @@ impl SimpleEngine {
             let remain_p = pattern.len() - p_pos;
 
             if self.pm_ops.lock().unwrap().contains_key(&current_match_id) {
-                info!("Already built ({c_pos}, {p_pos})");
                 continue
             }
 
@@ -315,9 +239,9 @@ impl SimpleEngine {
                     self.consume_pattern(c_pos, p_pos, depth, p_id, remain_c, remain_p, match_options, content.padding)
                 );
                 consume_zero_depth += 1;
+                // TODO remove
                 if remain_p > 1 {
                     remain.push_back((c_pos + 1, p_pos + 1, depth + 1));
-                    info!("Remain += {:?}", (c_pos + 1, p_pos + 1, depth + 1));
                 }
             }
         
@@ -329,8 +253,8 @@ impl SimpleEngine {
                 let _ = maybe_r_res.insert(
                     self.consume_pattern(c_pos, p_pos, consume_zero_depth, PatternId::Zero, remain_c, remain_p, match_options, content.padding)
                 );
+                // TODO remove
                 remain.push_back((c_pos + 1, p_pos, depth + 1));
-                info!("Remain += {:?}", (c_pos + 1, p_pos, depth + 1));
             }
 
             match (maybe_l_res, maybe_r_res) {
@@ -351,7 +275,6 @@ impl SimpleEngine {
                 },
                 (None, None) => panic!("Could not build branch at ({c_pos}, {p_pos})."),
             };
-            info!("Inserted PatternMatch({c_pos}, {p_pos}, {depth})");
         }
     }
 
@@ -362,22 +285,26 @@ impl SimpleEngine {
         while !nodes.is_empty() {
             nodes = nodes.iter().map(|node| {
                 let mut children: Vec<&BitwiseTree> = vec![];
-                let ex_id = match node {
-                    BitwiseTree::Leaf(bw_param) => match bw_param {
-                        BitwiseParam::AndRes { l_res, r_res } => BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() },
-                        BitwiseParam::OrRes { l_res, r_res } => BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() },
-                        BitwiseParam::EqRes(..) => panic!("Unexpected BitwiseParam::EqRes"),
-                        BitwiseParam::PatternMatchRes { .. } => panic!("Unexpected BitwiseParam::PatternMatchRes"),
-                    },
+                let bw = match node {
+                    BitwiseTree::Leaf(bw_param) => bw_param.clone(),
+                    // match bw_param {
+                    //     BitwiseParam::AndRes { l_res, r_res } => BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() },
+                    //     BitwiseParam::OrRes { l_res, r_res } => BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() },
+                    //     BitwiseParam::EqRes(..) => panic!("Unexpected BitwiseParam::EqRes"),
+                    //     BitwiseParam::PatternMatchRes { .. } => panic!("Unexpected BitwiseParam::PatternMatchRes"),
+                    // },
                     BitwiseTree::Node { op, left, right } => {
                         if let (BitwiseTree::Node{..}, BitwiseTree::Node{..}) = (&**left, &**right) {
                             children.push(left);
                             children.push(right);
                         }
-                        op.clone()
+                        match op {
+                            BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
+                            BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
+                        }
                     },
                 };
-                if self.insert_bitwise_op(ex_id, depth) {
+                if self.insert_bitwise_param(bw, depth) {
                     return children;
                 }
 
@@ -393,7 +320,7 @@ impl SimpleEngine {
                 BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
                 BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
             },
-            BitwiseTree::Leaf(_) => panic!("Unexpected leaf"),
+            BitwiseTree::Leaf(bw_param) => bw_param.clone(),
         }
     }
 
@@ -489,19 +416,6 @@ impl SimpleEngine {
                 _ => BitwiseParam::PatternMatchRes { c_pos: c_pos + 1, p_pos: p_pos + 1 },
             };
 
-            // let bw_param = pm_ops.get(pm);
-            // let ex_id = bw_param;
-
-            // let move_bitwise_param= |bw_param, depth| {
-
-            // }
-            // if cache[ex_id].depth >= depth + 1 {
-            //     let remain = vec![bw_param];
-            //     while remain.len() > 0 {
-
-            //         remain.push()
-            //     }
-            // }pm
             BitwiseParam::AndRes {
                 l_res: Box::new(BitwiseParam::EqRes(c_pos, p_id)),
                 r_res: Box::new(pm)
@@ -535,20 +449,6 @@ impl SimpleEngine {
         }
     }
 
-/* 
-    not in cache {
-        cache[op] = depth
-        ops[depth].push(op)
-    }
-    in cache {
-        depth > cache_depth -> {
-            cache[op] = depth
-            ops[old_depth].remove(op)
-            ops[depth].push(op)
-        }
-        else -> return false
-    }
-    */
     fn insert_bitwise_op(&mut self, bw_ex_id: BitwiseExecId, mut depth: usize) -> bool {
         let ex_id: ExecutionId = ExecutionId::BitwiseOp(bw_ex_id.clone());
         let mut maybe_old_depth = None;
@@ -569,7 +469,6 @@ impl SimpleEngine {
         {
             let mut bitwise_ops = self.bitwise_ops.lock().unwrap();
             if let Some(old_depth) = maybe_old_depth {
-                info!("Moved bitwise op deeper.");
                 bitwise_ops[old_depth].remove(&bw_ex_id);
             }
             while depth >= bitwise_ops.len() {
@@ -581,19 +480,19 @@ impl SimpleEngine {
         true
     }
 
-    fn insert_bitwise_param(&mut self, bw_param: BitwiseParam, depth: usize) {
+    fn insert_bitwise_param(&mut self, bw_param: BitwiseParam, depth: usize) -> bool {
         match bw_param {
             BitwiseParam::AndRes { l_res, r_res } => {
                 let bw_exec_id = BitwiseExecId::And { l_res: *l_res, r_res: *r_res };
-                self.insert_bitwise_op(bw_exec_id, depth);
+                self.insert_bitwise_op(bw_exec_id, depth)
             },
             BitwiseParam::OrRes { l_res, r_res } => {
                 let bw_exec_id = BitwiseExecId::Or { l_res: *l_res, r_res: *r_res };
-                self.insert_bitwise_op(bw_exec_id, depth);
+                self.insert_bitwise_op(bw_exec_id, depth)
             },
-            BitwiseParam::EqRes(c_pos, _) => info!("Ignored EqRes on c_pos {c_pos}"),
-            BitwiseParam::PatternMatchRes{ c_pos, .. } => info!("Ignored PatternMatchRes on c_pos {c_pos}"),
-        };
+            BitwiseParam::EqRes(c_pos, _) => false,
+            BitwiseParam::PatternMatchRes{ c_pos, .. } => false,
+        }
     }
 }
 
@@ -602,17 +501,4 @@ impl SimpleEngine {
 pub struct MatchingOptions {
     pub sof: bool,
     pub eof: bool,
-}
-
-impl MatchingOptions {
-    // Methods to set individual flags
-    pub fn sof(&mut self, value: bool) -> &mut Self {
-        self.sof = value;
-        self
-    }
-
-    pub fn eof(&mut self, value: bool) -> &mut Self {
-        self.eof = value;
-        self
-    }
 }

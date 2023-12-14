@@ -1,15 +1,9 @@
 use std::iter;
 
 use concrete_csprng::seeders::Seed;
-
-use log::info;
 use tfhe::{prelude::*, ClientKey, Config};
 
 use crate::ciphertext::{FheString, FheAsciiChar, PaddingOptions};
-// use keys::{IntegerClientKey, IntegerConfig};
-// use tfhe::integers::keys::IntegerConfig;
-// use tfhe::keys::IntegerClientKey;
-// use tfhe::integers::{IntegerClientKey, IntegerConfig};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StringClientKey {
@@ -43,11 +37,11 @@ impl StringClientKey {
                     self.padding as usize - clear_str.len()
                 }
 		};
-        info!("Adding {nb_zeros} zeros.");
         let chars: Vec<FheAsciiChar> = clear_str
-            .bytes()
-            .chain(iter::repeat(0).take(nb_zeros))
-            .map(|byte| FheAsciiChar::encrypt(byte, &self.key))
+            .as_bytes()
+            .iter()
+            .chain(iter::repeat(&0_u8).take(nb_zeros))
+            .map(|byte| FheAsciiChar::encrypt(*byte, &self.key))
             .collect();
         let mut padding = PaddingOptions::default();
         padding.end(self.padding > 0);

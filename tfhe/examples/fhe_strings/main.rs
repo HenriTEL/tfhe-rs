@@ -15,10 +15,9 @@ mod regex;
 
 use env_logger::Env;
 use log::info;
-use tfhe::{prelude::*, ClientKey};
-use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint8};
+use tfhe::{prelude::*, ClientKey, Config};
+use tfhe::{set_server_key, ConfigBuilder, FheUint8};
 
-/// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(name = "fhe_strings")]
 #[command(about = "A cli to test the FHE string API.", long_about = None)]
@@ -39,42 +38,29 @@ fn main() {
 	let clear_string = args.clear_string.unwrap();
 
 	let config = ConfigBuilder::default().build();
-    let client_key = ClientKey::generate(config);
-	//  rayon::ThreadPoolBuilder::new()
-	// 	// .use_current_thread()
-	// 	.num_threads(1) // TODO remove
-	// 	.spawn_handler(|thread| {
-	// 		let server_key = client_key.generate_server_key();
-	// 		std::thread::spawn(move || {
-	// 			set_server_key(server_key.clone());
-	// 			thread.run()
-	// 		});
-	// 		Ok(())
-	// 	}
-	// ).build_global().unwrap();
-	set_server_key(client_key.generate_server_key());
-	info!("Generated server keys");
-	
+	let client_key = gen_server_keys_for_threads(config, 1);
 
 	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 4_u8);
 	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0_u8);
 
-	let fhe_string = str_client_key.encrypt(&clear_string).trim().repeat_clear(2);
+	let fhe_string = str_client_key.encrypt(&clear_string).repeat_clear(2);
 	let dec_string = str_client_key.decrypt(&fhe_string);
 	println!("Start string: '{dec_string}'");
 
 	let pattern = args.pattern.unwrap();
+
 	let fhe_op = fhe_string.contains_clear(pattern.as_str());
 	let dec_bool = fhe_op.decrypt(&client_key);
 	println!("Contains: {dec_bool}");
 
-	// let fhe_op = fhe_string.starts_with_clear(pattern.as_str()).unwrap();
-	// let dec_bool = fhe_op.decrypt(&client_key);
-	// println!("Starts with: {dec_bool}");
+	let fhe_op = fhe_string.starts_with_clear(pattern.as_str());
+	let dec_bool = fhe_op.decrypt(&client_key);
+	println!("Starts with: {dec_bool}");
 
-	// let fhe_op = fhe_string.ends_with_clear(pattern.as_str()).unwrap();
-	// let dec_bool = fhe_op.decrypt(&client_key);
-	// println!("Ends with: {dec_bool}");
+	let fhe_op = fhe_string.ends_with_clear(pattern.as_str());
+	let dec_bool = fhe_op.decrypt(&client_key);
+	println!("Ends with: {dec_bool}");
+
 	// let fhe_op = fhe_string + str_client_key.encrypt("_added");
 	// let dec_string = str_client_key.decrypt(&fhe_op);
 	// println!("Concat: '{dec_string}'");
@@ -126,4 +112,26 @@ fn main() {
 	// println!("Lower string: {dec_string}");
 	// assert_eq!(dec_string, clear_string.to_lowercase());
     
+}
+
+fn gen_server_keys_for_threads(config: Config, num_threads: usize) -> ClientKey{
+    let client_key = ClientKey::generate(config);
+	if num_threads > 1 {
+		rayon::ThreadPoolBuilder::new()
+		   // .use_current_thread()
+		   .num_threads(4) // TODO remove
+		   .spawn_handler(|thread| {
+			   let server_key = client_key.generate_server_key();
+			   std::thread::spawn(move || {
+				   set_server_key(server_key.clone());
+				   thread.run()
+			   });
+			   Ok(())
+		   }
+	   ).build_global().unwrap();
+	}
+	set_server_key(client_key.generate_server_key());
+	info!("Generated server keys for all threads");
+
+	client_key
 }
