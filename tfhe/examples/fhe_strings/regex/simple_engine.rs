@@ -33,6 +33,7 @@ impl Pattern {
         }
     }
 }
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum PatternId {
     Zero,

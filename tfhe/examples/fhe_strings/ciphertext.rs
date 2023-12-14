@@ -88,6 +88,7 @@ impl PaddingOptions {
     }
 }
 
+#[derive(Clone)]
 pub struct FheString {
     pub chars: Vec<FheAsciiChar>,
     pub padding: PaddingOptions,
@@ -135,11 +136,11 @@ impl FheString {
     // TODO merge common parts with trim_start()
     pub fn trim_end(&self) -> Self {
         let mut new_bytes: Vec<FheUint8> = vec![];
-        let fhe_255 = FheUint8::encrypt_trivial(255_u8);
+        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
         let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
         for c in self.chars.iter().rev() {
             let must_zero =  prev_whitespace.clone() & (c.is_whitespace() | c.byte.eq(0));
-            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_255);
+            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8);
             new_bytes.push(new_byte);
             prev_whitespace = prev_whitespace & (c.is_whitespace() | c.byte.eq(0));
         }
@@ -153,13 +154,14 @@ impl FheString {
         }
     }
 
+    // TODO merge duplicate code with trim_end
     pub fn trim_start(&self) -> Self {
         let mut new_bytes: Vec<FheUint8> = vec![];
-        let fhe_255 = FheUint8::encrypt_trivial(255_u8);
+        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
         let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
         for c in self.chars.iter() {
             let must_zero =  prev_whitespace.clone() & (c.is_whitespace() | c.byte.eq(0));
-            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_255);
+            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8);
             new_bytes.push(new_byte);
             prev_whitespace = prev_whitespace & (c.is_whitespace() | c.byte.eq(0));
         }
@@ -215,6 +217,20 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
+    pub fn starts_with(&self, pattern: FheString) -> FheBool {
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions { sof: true, eof: false };
+        let match_pattern = Pattern::Encrypted(pattern);
+        se.has_match(self, &match_pattern, match_options)
+    }
+
+    pub fn ends_with(&self, pattern: FheString) -> FheBool {
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions { sof: false, eof: true };
+        let match_pattern = Pattern::Encrypted(pattern);
+        se.has_match(self, &match_pattern, match_options)
+    }
+
     pub fn contains_clear(&self, pattern: &str) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions::default();
@@ -236,11 +252,15 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
-    fn eq(&self, other: Self) -> FheBool {
+    pub fn eq(&self, other: Self) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions { sof: true, eof: true };
         let match_pattern = Pattern::Encrypted(other);
         se.has_match(self, &match_pattern, match_options)
+    }
+
+    pub fn ne(&self, other: Self) -> FheBool {
+        !self.eq(other)
     }
 
     pub fn eq_ignore_case(&self, other: Self) -> FheBool {

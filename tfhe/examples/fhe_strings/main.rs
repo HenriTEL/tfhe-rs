@@ -43,11 +43,25 @@ fn main() {
 	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 4_u8);
 	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0_u8);
 
-	let fhe_string = str_client_key.encrypt(&clear_string).trim_start().repeat_clear(2);
+	let fhe_string = str_client_key.encrypt(&clear_string).trim();
 	let dec_string = str_client_key.decrypt(&fhe_string);
 	println!("Start string: '{dec_string}'");
 
+
 	let pattern = args.pattern.unwrap();
+	let fhe_pattern = str_nopad_client_key.encrypt(&pattern);
+	
+	let fhe_op = fhe_string.clone() + fhe_pattern.clone();
+	let dec_string = str_client_key.decrypt(&fhe_op);
+	println!("Concat: {dec_string}");
+
+	let fhe_op = fhe_string.eq(fhe_pattern.clone());
+	let dec_bool = fhe_op.decrypt(&client_key);
+	println!("Eq: {dec_bool}");
+
+	let fhe_op = fhe_string.eq_ignore_case(fhe_pattern);
+	let dec_bool = fhe_op.decrypt(&client_key);
+	println!("Eq_i: {dec_bool}");
 
 	let fhe_op = fhe_string.contains_clear(pattern.as_str());
 	let dec_bool = fhe_op.decrypt(&client_key);
