@@ -43,7 +43,7 @@ fn main() {
 	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 4_u8);
 	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0_u8);
 
-	let fhe_string = str_client_key.encrypt(&clear_string).repeat_clear(2);
+	let fhe_string = str_client_key.encrypt(&clear_string).trim_start().repeat_clear(2);
 	let dec_string = str_client_key.decrypt(&fhe_string);
 	println!("Start string: '{dec_string}'");
 

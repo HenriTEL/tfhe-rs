@@ -1,15 +1,38 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
 use log::info;
-use rayon::prelude::*;
+// use std::sync::{Arc, Mutex};
+// use rayon::prelude::*;
 
 use tfhe::prelude::*;
 use tfhe::FheBool;
 
 use crate::ciphertext::{FheString, PaddingOptions};
 
+pub enum Pattern {
+    Clear(String),
+    Encrypted(FheString),
+}
 
+impl Pattern {
+    fn has_padding(&self) -> bool {
+        match self {
+            Pattern::Clear(_) => false,
+            Pattern::Encrypted(pattern) => {
+                pattern.has_padding()
+            },
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Pattern::Clear(pattern) => pattern.len(),
+            Pattern::Encrypted(pattern) => {
+                pattern.chars.len()
+            },
+        }
+    }
+}
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum PatternId {
     Zero,
@@ -18,352 +41,222 @@ enum PatternId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum BitwiseParam {
-    EqRes(usize, PatternId),
-    AndRes { l_res: Box<BitwiseParam>, r_res:  Box<BitwiseParam> },
-    OrRes { l_res: Box<BitwiseParam>, r_res:  Box<BitwiseParam> },
-    PatternMatchRes { c_pos: usize, p_pos: usize },
-}
-
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum BitwiseExecId {
-    And { l_res: BitwiseParam, r_res:  BitwiseParam },
-    Or { l_res: BitwiseParam, r_res:  BitwiseParam},
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ExecutionId {
-    BitwiseOp(BitwiseExecId),
+enum Execution {
+    Eq(usize, PatternId),
+    And { l_res: Box<Execution>, r_res:  Box<Execution> },
+    Or { l_res: Box<Execution>, r_res:  Box<Execution> },
     PatternMatch { c_pos: usize, p_pos: usize },
-    // TODO PlaceHolder,
 }
 
 #[derive(Debug, Clone)]
-enum BitwiseTree {
-    Leaf(BitwiseParam),
+enum ExecutionTree {
+    Leaf(Execution),
     Node {
-        op: BitwiseExecId,
-        left: Box<BitwiseTree>,
-        right: Box<BitwiseTree>,
+        op: Execution,
+        left: Box<ExecutionTree>,
+        right: Box<ExecutionTree>,
     },
 }
 
 pub struct SimpleEngine {
-    cache: Arc<Mutex< HashMap<ExecutionId, (Option<FheBool>, usize)> >>,
-    pm_ops: Arc<Mutex< HashMap<ExecutionId, BitwiseParam> >>,
-    bitwise_ops: Arc<Mutex< Vec<HashSet<BitwiseExecId>> >>,
-    eq_ops: HashMap<(usize, PatternId), Option<FheBool>>,
+    // cache: Arc<Mutex< HashMap<Execution, Option<FheBool>> >>,
+    cache: HashMap<Execution, Option<FheBool>>,
+    pm_cache: HashMap<Execution, Execution>,
 
-    ops_count: usize,
-    cache_hits: usize,
+    // ops_count: usize,
+    // cache_hits: usize,
 }
 
+// fn pattern_match_to_execution(c_pos, p_pos, remain_c, remain_p, match_options) -> Execution {
+
+// }
 impl SimpleEngine {
     pub fn new() -> Self {
         Self {
-            cache: Arc::new(Mutex::new(HashMap::new())),
-            pm_ops: Arc::new(Mutex::new(HashMap::new())),
-            bitwise_ops: Arc::new(Mutex::new(vec![])),
-            eq_ops: HashMap::new(),
+            // cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: HashMap::new(),
+            pm_cache: HashMap::new(),
 
-            ops_count: 0,
-            cache_hits: 0,
+            // ops_count: 0,
+            // cache_hits: 0,
         }
     }
 
-    pub fn has_match(&mut self, content: &FheString, pattern: &String, match_options: MatchingOptions) -> FheBool {
-        let has_padding = content.padding.start | content.padding.middle | content.padding.end;
+    pub fn has_match(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheBool {
+        if pattern.has_padding() {
+            panic!("Padding not supported for the pattern.");
+        }
         let full_match =  match_options.sof && match_options.eof;
-        if content.chars.len() < pattern.len() || (!has_padding && full_match && content.chars.len() != pattern.len()) {
+        if content.chars.len() < pattern.len() || (!content.has_padding() && full_match && content.chars.len() != pattern.len()) {
             return FheBool::encrypt_trivial(false);
         }
 
-        self.build_execution_plan(content, pattern, match_options);
-        info!("Built pattern matching execution plan.");
+        let final_op = self.build_execution_plan(content, pattern, match_options);
 
-        self.eq_ops.iter_mut()
-            .for_each(|((c_pos, p_id),  res)| {
-                let _ = res.insert(content.chars[*c_pos].byte.eq(match p_id {
-                    PatternId::Zero => 0_u8,
-                    PatternId::Byte(b) => *b,
-                    PatternId::Index(..) => panic!("Unexpected encrypted pattern Id."),
-                }));
-            });
-        info!("Performed {} FHE equality checks.", self.eq_ops.len());
+        let mut remaining_ops: Vec<Execution> = self.cache.keys().map(|k| k.clone()).collect();
+        let mut prev_len = remaining_ops.len() + 1;
 
-        let get_result = |bw_param: &BitwiseParam| -> Option<FheBool> {
-            match bw_param {
-                BitwiseParam::AndRes { l_res, r_res } => {
-                    let bw_ex_id = BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() };
-                    match self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)) {
-                        Some((result, _)) => result.clone(),
-                        None => panic!("And res not found in cache"),
-                    }
-                },
-                BitwiseParam::OrRes { l_res, r_res } => {
-                    let bw_ex_id = BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() };
-                    self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)).unwrap().clone().0
-                },
-                BitwiseParam::EqRes(c_pos, p_id) => {
-                    self.eq_ops.get(&(*c_pos, *p_id)).unwrap().clone()
-                },
-                BitwiseParam::PatternMatchRes { c_pos, p_pos } => {
-                    let ex_id = ExecutionId::PatternMatch { c_pos: *c_pos, p_pos: *p_pos };
-                    
-                    let bw_param = self.pm_ops.lock().unwrap().get(&ex_id).unwrap().clone();
-                    match bw_param {
-                        BitwiseParam::EqRes(c_pos, p_id) => self.eq_ops.get(&(c_pos, p_id)).unwrap().clone(),
-                        BitwiseParam::AndRes { l_res, r_res } => {
-                            let bw_ex_id = BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() };
-                            self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)).unwrap().0.clone()
-                        },
-                        BitwiseParam::OrRes { l_res, r_res } => {
-                            let bw_ex_id = BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() };
-                            self.cache.lock().unwrap().get(&ExecutionId::BitwiseOp(bw_ex_id)).unwrap().clone().0
-                        },
-                        BitwiseParam::PatternMatchRes { .. } => panic!("Unexpected PatternMatchRes"),
-                    }
-                }
-            }
-        };
-
-        let mut skipped_ops = vec![];
-        for ops_vec in self.bitwise_ops.lock().unwrap().iter().rev() {
-            skipped_ops = ops_vec.iter().chain(skipped_ops.iter())
-                .map( |bw_ex_id| {
-                    let ex_id = ExecutionId::BitwiseOp(bw_ex_id.clone());
-                    if let Some((Some(_), _)) = self.cache.lock().unwrap().get(&ex_id) {
+        while remaining_ops.len() < prev_len {
+            prev_len = remaining_ops.len();
+            remaining_ops = remaining_ops.iter()
+                .map(|execution, | {
+                    if let Some(_) = self.cache.get(execution).unwrap() {
                         return vec![];
                     }
-                    
-                    let result = match bw_ex_id {
-                        BitwiseExecId::And { l_res, r_res } => {
-                            match (get_result(l_res), get_result(r_res)) {
-                                (Some(a), Some(b)) => Some(a & b),
-                                _ => None,
-                            }
+                    let new_res = match execution {
+                        Execution::Eq(c_pos, p_id) => match p_id {
+                            PatternId::Zero => Some(content.chars[*c_pos].byte.eq(0)),
+                            PatternId::Byte(b) => Some(content.chars[*c_pos].byte.eq(*b)),
+                            PatternId::Index(p_pos) => {
+                                if let Pattern::Encrypted(p) = pattern {
+                                    Some(content.chars[*c_pos].byte.eq(p.chars[*p_pos].byte.clone()))
+                                } else {
+                                    panic!("Unexpected Clear pattern");
+                                }
+                            },
                         },
-                        BitwiseExecId::Or { l_res, r_res } => {
-                            match (get_result(l_res), get_result(r_res)) {
-                                (Some(a), Some(b)) => Some(a | b),
+                        Execution::And { l_res, r_res } =>
+                            match (self.cache.get(&*l_res), self.cache.get(&*r_res)) {
+                                (Some(Some(l)), Some(Some(r))) => Some(l & r),
                                 _ => None,
-                            }
                         },
+                        Execution::Or { l_res, r_res } =>
+                        match (self.cache.get(&*l_res), self.cache.get(&*r_res)) {
+                            (Some(Some(l)), Some(Some(r))) => Some(l | r),
+                            _ => None,
+                    },
+                        Execution::PatternMatch { .. } => None,
                     };
-                    if let Some(res) = result {
-                        let _ = self.cache.lock().unwrap().get_mut(&ex_id).unwrap().0.insert(res);
-                        return vec![];
-                    } else {
-                        return vec![bw_ex_id.clone()];
-                    }
-                    
-                })
-                .flatten()
-                .collect();
-        };
-        let mut prev_len = 1000;
-        while prev_len > skipped_ops.len() {
-            prev_len = skipped_ops.len();
-            info!("Remaining ops: {prev_len}");
-            skipped_ops = skipped_ops.iter()
-                .map( |bw_ex_id| {
-                    let ex_id = ExecutionId::BitwiseOp(bw_ex_id.clone());
-                    if let Some((Some(_), _)) = self.cache.lock().unwrap().get(&ex_id) {
+
+                    if let Some(ref res) = new_res {
+                        let _ = self.cache.get_mut(execution).unwrap().insert(res.clone());
+                        // If there is a pattern match corresponding to this execution, set its result
+                        if let Some(pm_exec) = self.pm_cache.get(execution) {
+                            let _ = self.cache.get_mut(pm_exec).unwrap().insert(res.clone());
+                        }
                         return vec![];
                     }
-                    let result = match bw_ex_id {
-                        BitwiseExecId::And { l_res, r_res } => {
-                            match (get_result(l_res), get_result(r_res)) {
-                                (Some(a), Some(b)) => Some(a & b),
-                                _ => None,
-                            }
-                        },
-                        BitwiseExecId::Or { l_res, r_res } => {
-                            match (get_result(l_res), get_result(r_res)) {
-                                (Some(a), Some(b)) => Some(a | b),
-                                _ => None,
-                            }
-                        },
-                    };
-                    if let Some(res) = result {
-                        let _ = self.cache.lock().unwrap().get_mut(&ex_id).unwrap().0.insert(res);
-                        return vec![];
-                    } else {
-                        return vec![bw_ex_id.clone()];
-                    }
-                    
+                    vec![execution.clone()]
                 })
                 .flatten()
                 .collect();
         }
-
-        if skipped_ops.len() > 0 {
-            info!("remain:\n {:?}", skipped_ops);
-            panic!("skipped_ops not empty");
+        if remaining_ops.len() > 0 {
+            panic!("Could not compute {} remaining operations.", remaining_ops.len());
         }
-        let root_ex_id = ExecutionId::BitwiseOp(self.bitwise_ops.lock().unwrap()[0].clone().into_iter().next().unwrap());
-
-        self.cache.lock().unwrap().get(&root_ex_id).unwrap().clone().0.unwrap()
+        info!("Completed {} FHE operations.", self.cache.len());
+        self.cache.get(&final_op).unwrap().clone().unwrap()
     }
 
-    fn build_execution_plan(&mut self, content: &FheString, pattern: &String, match_options: MatchingOptions) {
-        let mut init_remain = vec![];
-        if match_options.sof {
-            init_remain.push((0, 0, 0));
+    fn build_execution_plan(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> Execution {
+        let mut final_op = Execution::PatternMatch { c_pos: 0, p_pos: 0 };
+        let mut match_candidates: Vec<(usize, usize)> = if match_options.sof {
+            vec![(0, 0)]
         } else {
             let max_start = content.chars.len() - pattern.len();
             if max_start > 0 {
-                self.insert_bitwise_tree(0, max_start, PatternId::Index(0), "or", 0);
+                let nodes = self.build_leaves(0, max_start, PatternId::Index(0), "or");
+                let root = self.build_bitwise_execution_tree(nodes, "or");
+                final_op = self.insert_execution_tree(root);
+                (0..=max_start).map(|c_pos| (c_pos, 0)).collect()
+            } else {
+                vec![(0, 0)]
             }
-            let depth = self.bitwise_ops.lock().unwrap().len();
-            init_remain.push((0, 0, depth));
-        }
-        let mut remain: VecDeque<(usize, usize, usize)> = init_remain.into_iter().collect();
+        };
 
-        while remain.len() > 0 {
-            let (c_pos, p_pos, depth) = remain.pop_front().unwrap();
-            let current_match_id = ExecutionId::PatternMatch { c_pos, p_pos };
+        while match_candidates.len() > 0 {
+            let (c_pos, p_pos) = match_candidates.pop().unwrap();
+            let pattern_match = Execution::PatternMatch { c_pos, p_pos };
             let remain_c = content.chars.len() - c_pos;
             let remain_p = pattern.len() - p_pos;
 
-            if self.pm_ops.lock().unwrap().contains_key(&current_match_id) {
+            if self.cache.contains_key(&pattern_match) {
                 continue
             }
 
-            let mut maybe_l_res: Option<BitwiseParam> = None;
-            let mut consume_zero_depth = depth;
+            let mut maybe_l_res: Option<Execution> = None;
             if remain_p > 0 {
-                let p_id = PatternId::Byte(pattern.as_bytes()[p_pos]);
-                let _ = maybe_l_res.insert(
-                    self.consume_pattern(c_pos, p_pos, depth, p_id, remain_c, remain_p, match_options, content.padding)
-                );
-                consume_zero_depth += 1;
-                // TODO remove
+                let p_id = match pattern {
+                    Pattern::Clear(ref p) => PatternId::Byte(p.as_bytes()[p_pos]),
+                    Pattern::Encrypted(_) => PatternId::Index(p_pos),
+                };
+                let l_res = self.consume_pattern(c_pos, p_pos, p_id, remain_c, remain_p, match_options, content.padding);
+                self.cache.insert(l_res.clone(), None);
+                maybe_l_res = Some(l_res);
                 if remain_p > 1 {
-                    remain.push_back((c_pos + 1, p_pos + 1, depth + 1));
+                    match_candidates.push((c_pos + 1, p_pos + 1));
                 }
             }
         
             // TODO remove (remain_p == 0 && content.padding.end) as it's dealt by the zero_suffix constraint
             let can_consume_zero = remain_c - 1 >= remain_p
                 && ((p_pos == 0 && content.padding.start) || (p_pos > 0 && content.padding.middle) || (remain_p == 0 && content.padding.end));
-            let mut maybe_r_res: Option<BitwiseParam> = None;
+            let mut maybe_r_res: Option<Execution> = None;
             if can_consume_zero {
-                let _ = maybe_r_res.insert(
-                    self.consume_pattern(c_pos, p_pos, consume_zero_depth, PatternId::Zero, remain_c, remain_p, match_options, content.padding)
-                );
-                // TODO remove
-                remain.push_back((c_pos + 1, p_pos, depth + 1));
+                let r_res = self.consume_pattern(c_pos, p_pos, PatternId::Zero, remain_c, remain_p, match_options, content.padding);
+                self.cache.insert(r_res.clone(), None);
+                maybe_r_res = Some(r_res);
+                match_candidates.push((c_pos + 1, p_pos));
             }
 
-            match (maybe_l_res, maybe_r_res) {
+            let execution = match (maybe_l_res, maybe_r_res) {
                 (Some(l_res), Some(r_res)) => {
-                    self.insert_bitwise_param(l_res.clone(), depth + 1);
-                    self.insert_bitwise_param(r_res.clone(), depth + 1);
-                    let bw_param = BitwiseParam::OrRes { l_res: Box::new(l_res), r_res: Box::new(r_res) };
-                    self.insert_bitwise_param(bw_param.clone(), depth);
-                    self.pm_ops.lock().unwrap().insert(current_match_id, bw_param);
+                    let ex = Execution::Or { l_res: Box::new(l_res), r_res: Box::new(r_res) };
+                    self.cache.insert(ex.clone(), None);
+                    ex
                 },
-                (Some(l_res), None) => {
-                    self.insert_bitwise_param(l_res.clone(), depth);
-                    self.pm_ops.lock().unwrap().insert(current_match_id, l_res);
-                },
-                (None, Some(r_res)) => {
-                    self.insert_bitwise_param(r_res.clone(), depth);
-                    self.pm_ops.lock().unwrap().insert(current_match_id, r_res);
-                },
+                (Some(l_res), None) => l_res,
+                (None, Some(r_res)) => r_res,
                 (None, None) => panic!("Could not build branch at ({c_pos}, {p_pos})."),
             };
+            self.pm_cache.insert(execution, pattern_match.clone());
+            self.cache.insert(pattern_match, None);
         }
+        final_op
     }
 
-    fn insert_bitwise_tree(&mut self, c_start: usize, c_end: usize, p_id: PatternId, op_type: &str, mut depth: usize) -> BitwiseParam {
-        let root = self.build_bitwise_tree(c_start, c_end, p_id, op_type);
+    fn insert_execution_tree(&mut self, root: ExecutionTree) -> Execution {
         let mut nodes = vec![&root];
-
         while !nodes.is_empty() {
-            nodes = nodes.iter().map(|node| {
-                let mut children: Vec<&BitwiseTree> = vec![];
-                let bw = match node {
-                    BitwiseTree::Leaf(bw_param) => bw_param.clone(),
-                    // match bw_param {
-                    //     BitwiseParam::AndRes { l_res, r_res } => BitwiseExecId::And { l_res: *l_res.clone(), r_res: *r_res.clone() },
-                    //     BitwiseParam::OrRes { l_res, r_res } => BitwiseExecId::Or { l_res: *l_res.clone(), r_res: *r_res.clone() },
-                    //     BitwiseParam::EqRes(..) => panic!("Unexpected BitwiseParam::EqRes"),
-                    //     BitwiseParam::PatternMatchRes { .. } => panic!("Unexpected BitwiseParam::PatternMatchRes"),
-                    // },
-                    BitwiseTree::Node { op, left, right } => {
-                        if let (BitwiseTree::Node{..}, BitwiseTree::Node{..}) = (&**left, &**right) {
+            nodes = nodes.into_iter().map(|node| {
+                let mut children: Vec<&ExecutionTree> = vec![];
+                let execution = match node {
+                    ExecutionTree::Leaf(ex) => ex,
+                    ExecutionTree::Node { op, left, right } => {
+                        if let ExecutionTree::Leaf(Execution::PatternMatch { .. }) = **left {
+                        } else {
                             children.push(left);
+                        };
+                        if let ExecutionTree::Leaf(Execution::PatternMatch { .. }) = **right {
+                        } else {
                             children.push(right);
-                        }
-                        match op {
-                            BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
-                            BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res.clone()), r_res: Box::new(r_res.clone()) },
-                        }
+                        };
+                        op
                     },
                 };
-                if self.insert_bitwise_param(bw, depth) {
-                    return children;
-                }
 
-                vec![]
+                if self.cache.contains_key(execution) {
+                    return vec![];
+                }
+                self.cache.insert(execution.clone(), None);
+
+                children
             })
             .flatten()
             .collect();
-            depth += 1;
         }
 
         match root {
-            BitwiseTree::Node { op, .. } => match op {
-                BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-            },
-            BitwiseTree::Leaf(bw_param) => bw_param.clone(),
+            ExecutionTree::Node { op, .. } => op,
+            ExecutionTree::Leaf(ex) => ex,
         }
     }
 
-    // A 2D vec iversed tree where the first layer consists of equality checks between content characters
-    // ranging from c_start until c_end and a pattern p_id.
-    // The layer at i+1 rduce the results at layer i by pairing its element in the bitwise operation specified by op_type.
-    // Until we end with the last remaining bitwise operation at the bottom layer.
-    fn build_bitwise_tree(&mut self, c_start: usize, c_end: usize, p_id: PatternId, op_type: &str) -> BitwiseTree {
-        let mut make_leaf_op = |c_pos: usize| {
+    fn build_bitwise_execution_tree(&self, mut nodes: Vec<ExecutionTree>, op_type: &str) -> ExecutionTree {
+        let make_bitwise_op = |l_res: Execution, r_res: Execution| {
             match op_type {
-                "and" => {
-                    self.eq_ops.insert((c_pos, p_id), None);
-                    BitwiseParam::EqRes(c_pos, p_id)
-                },
-                "or" => {
-                    match p_id {
-                        PatternId::Index(p_pos) => BitwiseParam::PatternMatchRes { c_pos, p_pos },
-                        _ => panic!("Unexpected PatternId"),
-                    }
-                },
-                s => panic!("Unexpected bitwise operation type '{s}'.")
-            }
-        };
-
-        if c_end - c_start < 1  {
-            return BitwiseTree::Leaf(make_leaf_op(c_start))
-        }
-        // Make sure that the left nodes are even increase cache hits
-        let mut nodes: Vec<BitwiseTree> = if c_start % 2 > 0 {
-            vec![BitwiseTree::Leaf(make_leaf_op(c_start))]
-        } else {
-            vec![]
-        };
-
-        nodes.extend((c_start..=c_end).map(|i| BitwiseTree::Leaf(make_leaf_op(i))));
-        if nodes.len() % 2 > 0 {
-            nodes.push(BitwiseTree::Leaf(make_leaf_op(c_end)));
-        }
-
-        let make_bw_op = |l_res, r_res| {
-            match op_type {
-                "and" => BitwiseExecId::And { l_res, r_res },
-                "or" => BitwiseExecId::Or { l_res, r_res },
+                "and" => Execution::And { l_res: Box::new(l_res), r_res: Box::new(r_res) },
+                "or" => Execution::Or { l_res: Box::new(l_res), r_res: Box::new(r_res) },
                 s => panic!("Unexpected bitwise operation type '{s}'.")
             }
         };
@@ -379,119 +272,95 @@ impl SimpleEngine {
                         chunk[0].clone()
                     };
                     let op = match (left.clone(), right.clone()) {
-                        (BitwiseTree::Leaf(l_res), BitwiseTree::Leaf(r_res)) => make_bw_op(l_res, r_res),
-                        (BitwiseTree::Node { op: l_id, .. }, BitwiseTree::Node { op: r_id, .. }) => {
-                            let l_res = match l_id {
-                                // TODO remove those converation operations by implementing the proper into() traits
-                                BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                                BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                            };
-                            let r_res = match r_id {
-                                BitwiseExecId::And { l_res, r_res } => BitwiseParam::AndRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                                BitwiseExecId::Or { l_res, r_res } => BitwiseParam::OrRes { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                            };
-                            make_bw_op(l_res, r_res)
-                        },
+                        (ExecutionTree::Leaf(l_res), ExecutionTree::Leaf(r_res)) => make_bitwise_op(l_res, r_res),
+                        (ExecutionTree::Node { op: l_res, .. }, ExecutionTree::Node { op: r_res, .. }) => make_bitwise_op(l_res, r_res),
                         _ => panic!("Unexpected Leaf and Node mismatch.")
                     };
-                    BitwiseTree::Node { op, left: Box::new(left), right: Box::new(right) }
+                    ExecutionTree::Node { op, left: Box::new(left), right: Box::new(right) }
                 })
                 .collect();
         }
 
-
         nodes.pop().expect("Unexpected empty tree")
     }
 
-    fn consume_pattern(&mut self, c_pos: usize, p_pos: usize, depth: usize, p_id: PatternId, remain_c: usize, remain_p: usize, match_options: MatchingOptions, padding: PaddingOptions) -> BitwiseParam {
+    fn build_leaves(&mut self, c_start: usize, c_end: usize, p_id: PatternId, op_type: &str) -> Vec<ExecutionTree> {
+        let make_leaf_op = |c_pos: usize| {
+            match op_type {
+                "and" => Execution::Eq(c_pos, p_id),
+                "or" => if let PatternId::Index(p_pos) = p_id {
+                    Execution::PatternMatch { c_pos, p_pos }
+                } else {
+                    panic!("Unexpected PatternId");
+                },
+                s => panic!("Unexpected bitwise operation type '{s}'.")
+            }
+        };
+
+        // Make sure that the left nodes are even to increase cache hits
+        let mut nodes: Vec<ExecutionTree> = if (c_end - c_start < 1) || (c_start % 2 > 0) {
+            vec![ExecutionTree::Leaf(make_leaf_op(c_start))]
+        } else {
+            vec![]
+        };
+        nodes.extend((c_start..=c_end).map(|i| ExecutionTree::Leaf(make_leaf_op(i))));
+
+        nodes
+    }
+    
+    // A function that inserts all necessary executions to get the result of a pattern match starting at (c_pos, p_pos)
+    // The p_id parameter can be Zero or a Byte if we consume the content character at c_pos as a Zero or the pattern byte at p_pos.
+    // It returns the root Execution.
+    fn consume_pattern(&mut self, c_pos: usize, p_pos: usize, p_id: PatternId, remain_c: usize, remain_p: usize, match_options: MatchingOptions, padding: PaddingOptions) -> Execution {
         let zero_prefixed = c_pos > 0 && p_pos == 0 && match_options.sof && padding.start;
         let zero_suffixed = remain_c > 1 && remain_p == 1 && match_options.eof && padding.end;
 
-        self.eq_ops.insert((c_pos, p_id), None);
-        let main_match = if remain_p < 2 {
-            BitwiseParam::EqRes(c_pos, p_id)
-        } else {
-            let pm = match p_id {
-                PatternId::Zero => BitwiseParam::PatternMatchRes { c_pos: c_pos + 1, p_pos },
-                _ => BitwiseParam::PatternMatchRes { c_pos: c_pos + 1, p_pos: p_pos + 1 },
-            };
+        let p_eq = Execution::Eq(c_pos, p_id);
+        self.cache.insert(p_eq.clone(), None);
 
-            BitwiseParam::AndRes {
-                l_res: Box::new(BitwiseParam::EqRes(c_pos, p_id)),
-                r_res: Box::new(pm)
-            }
+        let main_match = if remain_p < 2 {
+            // This is the last char of the pattern to match
+            p_eq
+        } else {
+            let pattern_match = match p_id {
+                PatternId::Zero => Execution::PatternMatch { c_pos: c_pos + 1, p_pos },
+                _ => Execution::PatternMatch { c_pos: c_pos + 1, p_pos: p_pos + 1 },
+            };
+            let ex_and = Execution::And {l_res: Box::new(p_eq), r_res: Box::new(pattern_match) };
+            self.cache.insert(ex_and.clone(), None);
+            ex_and
+        };
+
+        let mut insert_zero_range = |c_start, c_end| -> Execution {
+            let nodes = self.build_leaves(c_start, c_end, PatternId::Zero, "and");
+            let root = self.build_bitwise_execution_tree(nodes, "and");
+            self.insert_execution_tree(root)
         };
 
         match (zero_prefixed, zero_suffixed) {
             (false, false) => main_match,
             (true, false) => {
-                let zero_prefix = self.insert_bitwise_tree(0, c_pos - 1, PatternId::Zero, "and", depth + 1);
-                self.insert_bitwise_param(main_match.clone(), depth + 1);
-
-                BitwiseParam::AndRes { l_res: Box::new(zero_prefix), r_res: Box::new(main_match) }
+                let zero_prefix_ex = insert_zero_range(0, c_pos - 1);
+                let ex_and = Execution::And { l_res: Box::new(zero_prefix_ex), r_res: Box::new(main_match) };
+                self.cache.insert(ex_and.clone(), None);
+                ex_and
             },
             (false, true) => {
-                let zero_suffix = self.insert_bitwise_tree(c_pos + 1,  c_pos + remain_c - 1, PatternId::Zero, "and", depth + 1);
-                self.insert_bitwise_param(main_match.clone(), depth + 1);
-
-                BitwiseParam::AndRes { l_res: Box::new(main_match), r_res: Box::new(zero_suffix) }
+                let zero_suffix_ex = insert_zero_range(c_pos + 1,  c_pos + remain_c - 1);
+                let ex_and = Execution::And { l_res: Box::new(main_match), r_res: Box::new(zero_suffix_ex) };
+                self.cache.insert(ex_and.clone(), None);
+                ex_and
             },
             (true, true) => {
-                let zero_prefix = self.insert_bitwise_tree(0, c_pos - 1, PatternId::Zero, "and", depth + 2);
-                self.insert_bitwise_param(main_match.clone(), depth + 2);
+                let zero_prefix_ex = insert_zero_range(0, c_pos - 1);
+                let zero_suffix_ex = insert_zero_range(c_pos + 1,  c_pos + remain_c - 1);
+                let ex_and = Execution::And { l_res: Box::new(zero_prefix_ex), r_res: Box::new(main_match) };
+                self.cache.insert(ex_and.clone(), None);
 
-                let ex_res = BitwiseParam::AndRes { l_res: Box::new(zero_prefix), r_res: Box::new(main_match) };
-                self.insert_bitwise_param(ex_res.clone(), depth + 1);
-                let zero_suffix = self.insert_bitwise_tree(c_pos + 1,  c_pos + remain_c - 1, PatternId::Zero, "and", depth + 1);
-
-                BitwiseParam::AndRes { l_res: Box::new(ex_res), r_res: Box::new(zero_suffix)  }
+                let final_and = Execution::And { l_res: Box::new(ex_and), r_res: Box::new(zero_suffix_ex)  };
+                self.cache.insert(final_and.clone(), None);
+                final_and
             }
-        }
-    }
-
-    fn insert_bitwise_op(&mut self, bw_ex_id: BitwiseExecId, mut depth: usize) -> bool {
-        let ex_id: ExecutionId = ExecutionId::BitwiseOp(bw_ex_id.clone());
-        let mut maybe_old_depth = None;
-
-        {
-            let mut cache = self.cache.lock().unwrap();
-            if let Some((_, cache_depth)) = cache.get_mut(&ex_id) {
-                if cache_depth >= &mut depth  {
-                    return false;
-                }
-                maybe_old_depth = Some(cache_depth.clone());
-                *cache_depth = depth;
-            } else {
-                cache.insert(ex_id, (None, depth));
-            }
-        }
-        
-        {
-            let mut bitwise_ops = self.bitwise_ops.lock().unwrap();
-            if let Some(old_depth) = maybe_old_depth {
-                bitwise_ops[old_depth].remove(&bw_ex_id);
-            }
-            while depth >= bitwise_ops.len() {
-                bitwise_ops.push(HashSet::new());
-            }
-            bitwise_ops[depth].insert(bw_ex_id);
-        }
-
-        true
-    }
-
-    fn insert_bitwise_param(&mut self, bw_param: BitwiseParam, depth: usize) -> bool {
-        match bw_param {
-            BitwiseParam::AndRes { l_res, r_res } => {
-                let bw_exec_id = BitwiseExecId::And { l_res: *l_res, r_res: *r_res };
-                self.insert_bitwise_op(bw_exec_id, depth)
-            },
-            BitwiseParam::OrRes { l_res, r_res } => {
-                let bw_exec_id = BitwiseExecId::Or { l_res: *l_res, r_res: *r_res };
-                self.insert_bitwise_op(bw_exec_id, depth)
-            },
-            BitwiseParam::EqRes(c_pos, _) => false,
-            BitwiseParam::PatternMatchRes{ c_pos, .. } => false,
         }
     }
 }

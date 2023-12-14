@@ -10,7 +10,7 @@
 use tfhe::{prelude::*, FheBool, ClientKey};
 use tfhe::{ FheUint8, FheUint32};
 
-use crate::regex::simple_engine::{SimpleEngine, MatchingOptions};
+use crate::regex::simple_engine::{SimpleEngine, Pattern, MatchingOptions};
 
 pub const ASCII_WHITESPACES:  [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
 pub const UP_LOW_DISTANCE: u8 = 32;
@@ -94,6 +94,10 @@ pub struct FheString {
 }
 
 impl FheString {
+
+    pub fn has_padding(&self) -> bool {
+        self.padding.start | self.padding.middle | self.padding.end
+    }
 
     pub fn len(&self) -> FheUint32 {
         let mut res = FheUint32::encrypt_trivial(0);
@@ -204,28 +208,44 @@ impl FheString {
         }
     }
 
+    pub fn contains(&self, pattern: FheString) -> FheBool {
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions::default();
+        let match_pattern = Pattern::Encrypted(pattern);
+        se.has_match(self, &match_pattern, match_options)
+    }
+
     pub fn contains_clear(&self, pattern: &str) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions::default();
-        se.has_match(self, &pattern.to_string(), match_options)
+        let match_pattern = Pattern::Clear(pattern.to_string());
+        se.has_match(self, &match_pattern, match_options)
     }
 
     pub fn starts_with_clear(&self, pattern: &str) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions { sof: true, eof: false };
-        se.has_match(self, &pattern.to_string(), match_options)
+        let match_pattern = Pattern::Clear(pattern.to_string());
+        se.has_match(self, &match_pattern, match_options)
     }
 
     pub fn ends_with_clear(&self, pattern: &str) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions { sof: false, eof: true };
-        se.has_match(self, &pattern.to_string(), match_options)
+        let match_pattern = Pattern::Clear(pattern.to_string());
+        se.has_match(self, &match_pattern, match_options)
     }
 
-    // pub fn eq_ignore_case(&self, other: Self) {
-    //     // TODO compute both to_lower in //
-    //     self.to_lower() == other.to_lower()
-    // }
+    fn eq(&self, other: Self) -> FheBool {
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions { sof: true, eof: true };
+        let match_pattern = Pattern::Encrypted(other);
+        se.has_match(self, &match_pattern, match_options)
+    }
+
+    pub fn eq_ignore_case(&self, other: Self) -> FheBool {
+        self.to_lower().eq(other.to_lower())
+    }
 }
 
 
@@ -247,20 +267,6 @@ impl std::ops::Add for FheString {
         }
     }
 }
-
-// impl PartialEq for FheString {
-//     fn eq(&self, other: &Self) -> bool {
-
-//         if self.chars.next() != other.chars.next() {
-
-//         }
-//         self.chars.iter().enumerate()
-//         .map(|i, char| char.byte == other[])
-//             .reduce(|acc, e| acc | e)
-//             .unwrap()
-//         self.value == other.value
-//     }
-// }
 
 // impl PartialOrd for FheString {
 //     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
