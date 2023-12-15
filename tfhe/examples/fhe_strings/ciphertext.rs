@@ -1,9 +1,9 @@
 use rayon::prelude::*;
 
 use tfhe::prelude::*;
-use tfhe::{ClientKey, FheBool, FheInt16, FheUint32, FheUint8};
+use tfhe::{ClientKey, FheBool, FheInt16, FheUint16, FheUint8};
 
-use crate::pattern_matcher::{MatchingOptions, Pattern, SimpleEngine};
+use crate::pattern_matcher::{MatchingOptions, Pattern, SimpleEngine, MatchResult};
 
 const ASCII_WHITESPACES: [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
 const UP_LOW_DISTANCE: u8 = 32;
@@ -19,13 +19,10 @@ impl FheString {
         self.padding.start | self.padding.middle | self.padding.end
     }
 
-    pub fn len(&self) -> FheUint32 {
-        let mut res = FheUint32::encrypt_trivial(0);
-        let mut prev_null = FheBool::encrypt_trivial(false);
+    pub fn len(&self) -> FheUint16 {
+        let mut res = FheUint16::encrypt_trivial(0);
         for char in self.chars.iter() {
-            let is_null = char.byte.eq(0);
-            res += FheUint32::cast_from(!(is_null | prev_null));
-            prev_null = char.byte.eq(0);
+            res += FheUint16::cast_from(char.byte.ne(0));
         }
 
         res
@@ -127,6 +124,7 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: true,
             eof: false,
+            result: MatchResult::Bool,
         };
         let match_pattern = Pattern::Encrypted(pattern);
         se.has_match(self, &match_pattern, match_options)
@@ -137,6 +135,7 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: false,
             eof: true,
+            result: MatchResult::Bool,
         };
         let match_pattern = Pattern::Encrypted(pattern);
         se.has_match(self, &match_pattern, match_options)
@@ -147,6 +146,7 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: true,
             eof: true,
+            result: MatchResult::Bool,
         };
         let match_pattern = Pattern::Encrypted(other);
         se.has_match(self, &match_pattern, match_options)
@@ -162,9 +162,22 @@ impl FheString {
 
     pub fn find(&self, pattern: FheString) -> FheInt16 {
         let mut se = SimpleEngine::new();
-        let match_options = MatchingOptions::default();
+        let match_options = MatchingOptions {
+            sof: false,
+            eof: false,
+            result: MatchResult::StartIndex,
+        };
         let match_pattern = Pattern::Encrypted(pattern);
         se.find(self, &match_pattern, match_options)
+    }
+
+    pub fn rfind(&self, pattern: FheString) -> FheInt16 {
+        let rev_s = self.reversed();
+        let rev_find = rev_s.find(pattern.reversed());
+        let s_len = FheInt16::cast_from(self.len());
+        let p_len = FheInt16::encrypt_trivial(pattern.chars.len() as i16);
+        
+        FheInt16::cast_from(rev_find.gt(-1)) * (s_len - p_len - rev_find + 1) - 1
     }
 
     pub fn strip_prefix(&self, pattern: FheString) -> Self {
@@ -173,9 +186,10 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: true,
             eof: false,
+            result: MatchResult::EndIndex,
         };
         let match_pattern = Pattern::Encrypted(pattern);
-        let end_index = se.find_end(self, &match_pattern, match_options);
+        let end_index = se.find(self, &match_pattern, match_options);
         let found_prefix = end_index.gt(-1);
 
         Self {
@@ -199,6 +213,7 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: false,
             eof: true,
+            result: MatchResult::StartIndex,
         };
         let match_pattern = Pattern::Encrypted(pattern);
         let start_index = se.find(self, &match_pattern, match_options);
@@ -249,6 +264,7 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: true,
             eof: false,
+            result: MatchResult::Bool,
         };
         let match_pattern = Pattern::Clear(pattern.to_string());
         se.has_match(self, &match_pattern, match_options)
@@ -259,6 +275,7 @@ impl FheString {
         let match_options = MatchingOptions {
             sof: false,
             eof: true,
+            result: MatchResult::Bool,
         };
         let match_pattern = Pattern::Clear(pattern.to_string());
         se.has_match(self, &match_pattern, match_options)
@@ -281,6 +298,17 @@ impl FheString {
         }
 
         new_bytes
+    }
+
+    fn reversed(&self) -> Self {
+        Self {
+            chars: self.chars.iter().rev().cloned().collect(),
+            padding: PaddingOptions {
+                start: self.padding.end,
+                middle: self.padding.middle,
+                end: self.padding.start,
+            }
+        }
     }
 }
 
@@ -350,11 +378,11 @@ impl FheAsciiChar {
     }
 }
 
-impl CastFrom<FheAsciiChar> for FheUint32 {
-    fn cast_from(input: FheAsciiChar) -> Self {
-        Self::cast_from(input.byte)
-    }
-}
+// impl CastFrom<FheAsciiChar> for FheUint32 {
+//     fn cast_from(input: FheAsciiChar) -> Self {
+//         Self::cast_from(input.byte)
+//     }
+// }
 
 #[derive(Default, Debug, Copy, Clone)]
 pub struct PaddingOptions {

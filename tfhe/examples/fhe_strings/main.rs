@@ -48,7 +48,7 @@ fn main() {
 
     let maxed_enc_u8 = MaxedFheUint8 {
         val: FheUint8::encrypt(2_u8, &client_key),
-        max_val: 4,
+        max_val: 2,
     };
     let fhe_string = str_client_key
         .encrypt(&clear_string)
@@ -60,29 +60,45 @@ fn main() {
     let pattern = args.pattern.unwrap();
     let fhe_pattern = str_nopad_client_key.encrypt(&pattern);
 
-    let fhe_op = fhe_string.clone() + fhe_pattern.clone();
+    let fhe_string_len = fhe_string.len();
+    let dec_int: u16 = fhe_string_len.decrypt(&client_key);
+    println!("Len: {dec_int}");
+
+    let fhe_op = fhe_string.clone().find(fhe_pattern.clone());
+    let dec_res: i16 = fhe_op.decrypt(&client_key);
+    println!("Find: {dec_res}");
+
+    let fhe_op = fhe_string.clone().rfind(fhe_pattern.clone());
+    let dec_res: i16 = fhe_op.decrypt(&client_key);
+    println!("Rfind: {dec_res}");
+	
+    let fhe_op = fhe_string.clone().strip_prefix(fhe_pattern.clone());
     let dec_string = str_client_key.decrypt(&fhe_op);
-    println!("Concat: {dec_string}");
+    println!("Strip prefix: {dec_string}");
 
-    let fhe_op = fhe_string.eq(fhe_pattern.clone());
-    let dec_bool = fhe_op.decrypt(&client_key);
-    println!("Eq: {dec_bool}");
+    // let fhe_op = fhe_string.clone() + fhe_pattern.clone();
+    // let dec_string = str_client_key.decrypt(&fhe_op);
+    // println!("Concat: {dec_string}");
 
-    let fhe_op = fhe_string.eq_ignore_case(fhe_pattern);
-    let dec_bool = fhe_op.decrypt(&client_key);
-    println!("Eq_i: {dec_bool}");
+    // let fhe_op = fhe_string.eq(fhe_pattern.clone());
+    // let dec_bool = fhe_op.decrypt(&client_key);
+    // println!("Eq: {dec_bool}");
 
-    let fhe_op = fhe_string.contains_clear(pattern.as_str());
-    let dec_bool = fhe_op.decrypt(&client_key);
-    println!("Contains: {dec_bool}");
+    // let fhe_op = fhe_string.eq_ignore_case(fhe_pattern);
+    // let dec_bool = fhe_op.decrypt(&client_key);
+    // println!("Eq_i: {dec_bool}");
 
-    let fhe_op = fhe_string.starts_with_clear(pattern.as_str());
-    let dec_bool = fhe_op.decrypt(&client_key);
-    println!("Starts with: {dec_bool}");
+    // let fhe_op = fhe_string.contains_clear(pattern.as_str());
+    // let dec_bool = fhe_op.decrypt(&client_key);
+    // println!("Contains: {dec_bool}");
 
-    let fhe_op = fhe_string.ends_with_clear(pattern.as_str());
-    let dec_bool = fhe_op.decrypt(&client_key);
-    println!("Ends with: {dec_bool}");
+    // let fhe_op = fhe_string.starts_with_clear(pattern.as_str());
+    // let dec_bool = fhe_op.decrypt(&client_key);
+    // println!("Starts with: {dec_bool}");
+
+    // let fhe_op = fhe_string.ends_with_clear(pattern.as_str());
+    // let dec_bool = fhe_op.decrypt(&client_key);
+    // println!("Ends with: {dec_bool}");
 
     // let fhe_op = fhe_string + str_client_key.encrypt("_added");
     // let dec_string = str_client_key.decrypt(&fhe_op);

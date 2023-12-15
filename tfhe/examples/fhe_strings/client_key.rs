@@ -1,6 +1,7 @@
 use std::iter;
 
 use concrete_csprng::seeders::Seed;
+use log::info;
 use tfhe::prelude::*;
 use tfhe::{ClientKey, Config};
 
@@ -43,6 +44,7 @@ impl StringClientKey {
                 }
             }
         };
+        info!("Adding {nb_zeros} zeros.");
         let chars: Vec<FheAsciiChar> = clear_str
             .as_bytes()
             .iter()
