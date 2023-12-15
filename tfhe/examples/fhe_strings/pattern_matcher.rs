@@ -1,10 +1,10 @@
+use log::info;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::time::Instant;
-use log::info;
-use tfhe::FheInt16;
 use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
+use std::time::Instant;
+use tfhe::FheInt16;
 
 use tfhe::prelude::*;
 use tfhe::FheBool;
@@ -26,18 +26,14 @@ impl Pattern {
     fn has_padding(&self) -> bool {
         match self {
             Pattern::Clear(_) => false,
-            Pattern::Encrypted(pattern) => {
-                pattern.has_padding()
-            },
+            Pattern::Encrypted(pattern) => pattern.has_padding(),
         }
     }
 
     fn len(&self) -> usize {
         match self {
             Pattern::Clear(pattern) => pattern.len(),
-            Pattern::Encrypted(pattern) => {
-                pattern.chars.len()
-            },
+            Pattern::Encrypted(pattern) => pattern.chars.len(),
         }
     }
 }
@@ -52,9 +48,18 @@ enum PatternId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Execution {
     Eq(usize, PatternId),
-    And { l_res: Box<Execution>, r_res:  Box<Execution> },
-    Or { l_res: Box<Execution>, r_res:  Box<Execution> },
-    PatternMatch { c_pos: usize, p_pos: usize },
+    And {
+        l_res: Box<Execution>,
+        r_res: Box<Execution>,
+    },
+    Or {
+        l_res: Box<Execution>,
+        r_res: Box<Execution>,
+    },
+    PatternMatch {
+        c_pos: usize,
+        p_pos: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -68,11 +73,10 @@ enum ExecutionTree {
 }
 
 pub struct SimpleEngine {
-    cache: Arc<Mutex< HashMap<Execution, Option<FheBool>> >>,
+    cache: Arc<Mutex<HashMap<Execution, Option<FheBool>>>>,
     // cache: HashMap<Execution, Option<FheBool>>,
     // Mapping of an Or, And or Eq execution to its corresponding PatternMatch
     pm_cache: HashMap<Execution, Execution>,
-
     // ops_count: usize,
     // cache_hits: usize,
 }
@@ -83,25 +87,32 @@ impl SimpleEngine {
             cache: Arc::new(Mutex::new(HashMap::new())),
             // cache: HashMap::new(),
             pm_cache: HashMap::new(),
-
             // ops_count: 0,
             // cache_hits: 0,
         }
     }
 
-    pub fn has_match(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheBool {
+    pub fn has_match(
+        &mut self,
+        content: &FheString,
+        pattern: &Pattern,
+        match_options: MatchingOptions,
+    ) -> FheBool {
         let start = Instant::now();
         if pattern.has_padding() {
             panic!("Padding not supported for the pattern.");
         }
-        let full_match =  match_options.sof && match_options.eof;
-        if content.chars.len() < pattern.len() || (!content.has_padding() && full_match && content.chars.len() != pattern.len()) {
+        let full_match = match_options.sof && match_options.eof;
+        if content.chars.len() < pattern.len()
+            || (!content.has_padding() && full_match && content.chars.len() != pattern.len())
+        {
             return FheBool::encrypt_trivial(false);
         }
 
         let final_op = self.build_execution_plan(content, pattern, match_options);
 
-        let mut remaining_ops: Vec<Execution> = self.cache.lock().unwrap().keys().map(|k| k.clone()).collect();
+        let mut remaining_ops: Vec<Execution> =
+            self.cache.lock().unwrap().keys().cloned().collect();
         let mut prev_len = remaining_ops.len() + 1;
         info!("Initialized execution plan in {:?}.", start.elapsed());
 
@@ -111,9 +122,10 @@ impl SimpleEngine {
             // For example when the final result look like (a | b) | c
             // compute (a | b), (false | c), (true | c) in the last but one iteration
             // so that we can directly retrieve the final result in the last iteration
-            remaining_ops = remaining_ops.par_iter()
-                .map(|execution, | {
-                    if let Some(_) = self.cache.lock().unwrap().get(execution).unwrap() {
+            remaining_ops = remaining_ops
+                .par_iter()
+                .map(|execution| {
+                    if self.cache.lock().unwrap().get(execution).unwrap().is_some() {
                         return vec![];
                     }
                     let new_res = match execution {
@@ -122,16 +134,18 @@ impl SimpleEngine {
                             PatternId::Byte(b) => Some(content.chars[*c_pos].byte.eq(*b)),
                             PatternId::Index(p_pos) => {
                                 if let Pattern::Encrypted(p) = pattern {
-                                    Some(content.chars[*c_pos].byte.eq(p.chars[*p_pos].byte.clone()))
+                                    Some(
+                                        content.chars[*c_pos].byte.eq(p.chars[*p_pos].byte.clone()),
+                                    )
                                 } else {
                                     panic!("Unexpected clear pattern");
                                 }
-                            },
+                            }
                         },
                         Execution::And { l_res, r_res } => {
                             let (m_l_res, m_r_res) = {
                                 let cache = self.cache.lock().unwrap();
-                                match (cache.get(&*l_res), cache.get(&*r_res)) {
+                                match (cache.get(l_res), cache.get(r_res)) {
                                     (Some(l), Some(r)) => (l.clone(), r.clone()),
                                     _ => (None, None),
                                 }
@@ -141,11 +155,11 @@ impl SimpleEngine {
                                 (Some(l), Some(r)) => Some(l & r),
                                 _ => None,
                             }
-                        },
+                        }
                         Execution::Or { l_res, r_res } => {
                             let (m_l_res, m_r_res) = {
                                 let cache = self.cache.lock().unwrap();
-                                match (cache.get(&*l_res), cache.get(&*r_res)) {
+                                match (cache.get(l_res), cache.get(r_res)) {
                                     (Some(l), Some(r)) => (l.clone(), r.clone()),
                                     _ => (None, None),
                                 }
@@ -155,15 +169,28 @@ impl SimpleEngine {
                                 (Some(l), Some(r)) => Some(l | r),
                                 _ => None,
                             }
-                        },
+                        }
                         Execution::PatternMatch { .. } => None,
                     };
 
                     if let Some(ref res) = new_res {
-                        let _ = self.cache.lock().unwrap().get_mut(execution).unwrap().insert(res.clone());
-                        // If there is a pattern match corresponding to this execution, set its result
+                        let _ = self
+                            .cache
+                            .lock()
+                            .unwrap()
+                            .get_mut(execution)
+                            .unwrap()
+                            .insert(res.clone());
+                        // If there is a pattern match corresponding to this execution, set its
+                        // result
                         if let Some(pm_exec) = self.pm_cache.get(execution) {
-                            let _ = self.cache.lock().unwrap().get_mut(pm_exec).unwrap().insert(res.clone());
+                            let _ = self
+                                .cache
+                                .lock()
+                                .unwrap()
+                                .get_mut(pm_exec)
+                                .unwrap()
+                                .insert(res.clone());
                         }
                         return vec![];
                     }
@@ -172,23 +199,51 @@ impl SimpleEngine {
                 .flatten()
                 .collect();
         }
-        if remaining_ops.len() > 0 {
-            panic!("Could not compute {} remaining operations.", remaining_ops.len());
+        if !remaining_ops.is_empty() {
+            panic!(
+                "Could not compute {} remaining operations.",
+                remaining_ops.len()
+            );
         }
         let duration = start.elapsed();
-        info!("Completed {} FHE operations in {:?}.", self.cache.lock().unwrap().len(), duration);
-        self.cache.lock().unwrap().get(&final_op).unwrap().clone().unwrap()
+        info!(
+            "Completed {} FHE operations in {:?}.",
+            self.cache.lock().unwrap().len(),
+            duration
+        );
+        self.cache
+            .lock()
+            .unwrap()
+            .get(&final_op)
+            .unwrap()
+            .clone()
+            .unwrap()
     }
 
-    pub fn find(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheInt16 {
+    pub fn find(
+        &mut self,
+        content: &FheString,
+        pattern: &Pattern,
+        match_options: MatchingOptions,
+    ) -> FheInt16 {
         FheInt16::encrypt_trivial(-1)
     }
 
-    pub fn find_end(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheInt16 {
+    pub fn find_end(
+        &mut self,
+        content: &FheString,
+        pattern: &Pattern,
+        match_options: MatchingOptions,
+    ) -> FheInt16 {
         FheInt16::encrypt_trivial(-1)
     }
 
-    fn build_execution_plan(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> Execution {
+    fn build_execution_plan(
+        &mut self,
+        content: &FheString,
+        pattern: &Pattern,
+        match_options: MatchingOptions,
+    ) -> Execution {
         let mut final_op = Execution::PatternMatch { c_pos: 0, p_pos: 0 };
         let mut match_candidates: Vec<(usize, usize)> = if match_options.sof {
             vec![(0, 0)]
@@ -204,14 +259,13 @@ impl SimpleEngine {
             }
         };
 
-        while match_candidates.len() > 0 {
-            let (c_pos, p_pos) = match_candidates.pop().unwrap();
+        while let Some((c_pos, p_pos)) = match_candidates.pop() {
             let pattern_match = Execution::PatternMatch { c_pos, p_pos };
             let remain_c = content.chars.len() - c_pos;
             let remain_p = pattern.len() - p_pos;
 
             if self.cache.lock().unwrap().contains_key(&pattern_match) {
-                continue
+                continue;
             }
 
             let mut maybe_l_res: Option<Execution> = None;
@@ -220,19 +274,37 @@ impl SimpleEngine {
                     Pattern::Clear(ref p) => PatternId::Byte(p.as_bytes()[p_pos]),
                     Pattern::Encrypted(_) => PatternId::Index(p_pos),
                 };
-                let l_res = self.consume_pattern(c_pos, p_pos, p_id, remain_c, remain_p, match_options, content.padding);
+                let l_res = self.consume_pattern(
+                    c_pos,
+                    p_pos,
+                    p_id,
+                    remain_c,
+                    remain_p,
+                    match_options,
+                    content.padding,
+                );
                 // self.cache.insert(l_res.clone(), None);
                 maybe_l_res = Some(l_res);
                 if remain_p > 1 {
                     match_candidates.push((c_pos + 1, p_pos + 1));
                 }
             }
-        
-            let can_consume_zero = remain_c - 1 >= remain_p
-                && ((p_pos == 0 && content.padding.start) || (p_pos > 0 && content.padding.middle) || (remain_p == 0 && content.padding.end));
+
+            let can_consume_zero = remain_c > remain_p
+                && ((p_pos == 0 && content.padding.start)
+                    || (p_pos > 0 && content.padding.middle)
+                    || (remain_p == 0 && content.padding.end));
             let mut maybe_r_res: Option<Execution> = None;
             if can_consume_zero {
-                let r_res = self.consume_pattern(c_pos, p_pos, PatternId::Zero, remain_c, remain_p, match_options, content.padding);
+                let r_res = self.consume_pattern(
+                    c_pos,
+                    p_pos,
+                    PatternId::Zero,
+                    remain_c,
+                    remain_p,
+                    match_options,
+                    content.padding,
+                );
                 // self.cache.insert(r_res.clone(), None);
                 maybe_r_res = Some(r_res);
                 match_candidates.push((c_pos + 1, p_pos));
@@ -240,10 +312,13 @@ impl SimpleEngine {
 
             let execution = match (maybe_l_res, maybe_r_res) {
                 (Some(l_res), Some(r_res)) => {
-                    let ex = Execution::Or { l_res: Box::new(l_res), r_res: Box::new(r_res) };
+                    let ex = Execution::Or {
+                        l_res: Box::new(l_res),
+                        r_res: Box::new(r_res),
+                    };
                     self.cache.lock().unwrap().insert(ex.clone(), None);
                     ex
-                },
+                }
                 (Some(l_res), None) => l_res,
                 (None, Some(r_res)) => r_res,
                 (None, None) => panic!("Could not build branch at ({c_pos}, {p_pos})."),
@@ -257,32 +332,33 @@ impl SimpleEngine {
     fn insert_execution_tree(&mut self, root: ExecutionTree) -> Execution {
         let mut nodes = vec![&root];
         while !nodes.is_empty() {
-            nodes = nodes.into_iter().map(|node| {
-                let mut children: Vec<&ExecutionTree> = vec![];
-                let execution = match node {
-                    ExecutionTree::Leaf(ex) => ex,
-                    ExecutionTree::Node { op, left, right } => {
-                        if let ExecutionTree::Leaf(Execution::PatternMatch { .. }) = **left {
-                        } else {
-                            children.push(left);
-                        };
-                        if let ExecutionTree::Leaf(Execution::PatternMatch { .. }) = **right {
-                        } else {
-                            children.push(right);
-                        };
-                        op
-                    },
-                };
+            nodes = nodes
+                .into_iter()
+                .flat_map(|node| {
+                    let mut children: Vec<&ExecutionTree> = vec![];
+                    let execution = match node {
+                        ExecutionTree::Leaf(ex) => ex,
+                        ExecutionTree::Node { op, left, right } => {
+                            if let ExecutionTree::Leaf(Execution::PatternMatch { .. }) = **left {
+                            } else {
+                                children.push(left);
+                            };
+                            if let ExecutionTree::Leaf(Execution::PatternMatch { .. }) = **right {
+                            } else {
+                                children.push(right);
+                            };
+                            op
+                        }
+                    };
 
-                if self.cache.lock().unwrap().contains_key(execution) {
-                    return vec![];
-                }
-                self.cache.lock().unwrap().insert(execution.clone(), None);
+                    if self.cache.lock().unwrap().contains_key(execution) {
+                        return vec![];
+                    }
+                    self.cache.lock().unwrap().insert(execution.clone(), None);
 
-                children
-            })
-            .flatten()
-            .collect();
+                    children
+                })
+                .collect();
         }
 
         match root {
@@ -291,13 +367,21 @@ impl SimpleEngine {
         }
     }
 
-    fn build_bitwise_execution_tree(&self, mut nodes: Vec<ExecutionTree>, op_type: &str) -> ExecutionTree {
-        let make_bitwise_op = |l_res: Execution, r_res: Execution| {
-            match op_type {
-                "and" => Execution::And { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                "or" => Execution::Or { l_res: Box::new(l_res), r_res: Box::new(r_res) },
-                s => panic!("Unexpected bitwise operation type '{s}'.")
-            }
+    fn build_bitwise_execution_tree(
+        &self,
+        mut nodes: Vec<ExecutionTree>,
+        op_type: &str,
+    ) -> ExecutionTree {
+        let make_bitwise_op = |l_res: Execution, r_res: Execution| match op_type {
+            "and" => Execution::And {
+                l_res: Box::new(l_res),
+                r_res: Box::new(r_res),
+            },
+            "or" => Execution::Or {
+                l_res: Box::new(l_res),
+                r_res: Box::new(r_res),
+            },
+            s => panic!("Unexpected bitwise operation type '{s}'."),
         };
 
         while nodes.len() > 1 {
@@ -311,11 +395,20 @@ impl SimpleEngine {
                         chunk[0].clone()
                     };
                     let op = match (left.clone(), right.clone()) {
-                        (ExecutionTree::Leaf(l_res), ExecutionTree::Leaf(r_res)) => make_bitwise_op(l_res, r_res),
-                        (ExecutionTree::Node { op: l_res, .. }, ExecutionTree::Node { op: r_res, .. }) => make_bitwise_op(l_res, r_res),
-                        _ => panic!("Unexpected Leaf and Node mismatch.")
+                        (ExecutionTree::Leaf(l_res), ExecutionTree::Leaf(r_res)) => {
+                            make_bitwise_op(l_res, r_res)
+                        }
+                        (
+                            ExecutionTree::Node { op: l_res, .. },
+                            ExecutionTree::Node { op: r_res, .. },
+                        ) => make_bitwise_op(l_res, r_res),
+                        _ => panic!("Unexpected Leaf and Node mismatch."),
                     };
-                    ExecutionTree::Node { op, left: Box::new(left), right: Box::new(right) }
+                    ExecutionTree::Node {
+                        op,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    }
                 })
                 .collect();
         }
@@ -323,17 +416,23 @@ impl SimpleEngine {
         nodes.pop().expect("Unexpected empty tree")
     }
 
-    fn build_leaves(&mut self, c_start: usize, c_end: usize, p_id: PatternId, op_type: &str) -> Vec<ExecutionTree> {
-        let make_leaf_op = |c_pos: usize| {
-            match op_type {
-                "and" => Execution::Eq(c_pos, p_id),
-                "or" => if let PatternId::Index(p_pos) = p_id {
+    fn build_leaves(
+        &mut self,
+        c_start: usize,
+        c_end: usize,
+        p_id: PatternId,
+        op_type: &str,
+    ) -> Vec<ExecutionTree> {
+        let make_leaf_op = |c_pos: usize| match op_type {
+            "and" => Execution::Eq(c_pos, p_id),
+            "or" => {
+                if let PatternId::Index(p_pos) = p_id {
                     Execution::PatternMatch { c_pos, p_pos }
                 } else {
                     panic!("Unexpected PatternId");
-                },
-                s => panic!("Unexpected bitwise operation type '{s}'.")
+                }
             }
+            s => panic!("Unexpected bitwise operation type '{s}'."),
         };
 
         // Ensure that the left leaves are at even positions to increase cache hits
@@ -346,11 +445,21 @@ impl SimpleEngine {
 
         nodes
     }
-    
-    // A function that inserts all necessary executions to get the result of a pattern match starting at (c_pos, p_pos)
-    // The p_id parameter can be Zero or a Byte if we consume the content character at c_pos as a Zero or the pattern byte at p_pos.
-    // It returns the root Execution.
-    fn consume_pattern(&mut self, c_pos: usize, p_pos: usize, p_id: PatternId, remain_c: usize, remain_p: usize, match_options: MatchingOptions, padding: PaddingOptions) -> Execution {
+
+    // A function that inserts all necessary executions to get the result of a pattern match
+    // starting at (c_pos, p_pos) The p_id parameter can be Zero or a Byte if we consume the
+    // content character at c_pos as a Zero or the pattern byte at p_pos. It returns the root
+    // Execution.
+    fn consume_pattern(
+        &mut self,
+        c_pos: usize,
+        p_pos: usize,
+        p_id: PatternId,
+        remain_c: usize,
+        remain_p: usize,
+        match_options: MatchingOptions,
+        padding: PaddingOptions,
+    ) -> Execution {
         let zero_prefixed = c_pos > 0 && p_pos == 0 && match_options.sof && padding.start;
         let zero_suffixed = remain_c > 1 && remain_p == 1 && match_options.eof && padding.end;
 
@@ -362,10 +471,19 @@ impl SimpleEngine {
             p_eq
         } else {
             let pattern_match = match p_id {
-                PatternId::Zero => Execution::PatternMatch { c_pos: c_pos + 1, p_pos },
-                _ => Execution::PatternMatch { c_pos: c_pos + 1, p_pos: p_pos + 1 },
+                PatternId::Zero => Execution::PatternMatch {
+                    c_pos: c_pos + 1,
+                    p_pos,
+                },
+                _ => Execution::PatternMatch {
+                    c_pos: c_pos + 1,
+                    p_pos: p_pos + 1,
+                },
             };
-            let ex_and = Execution::And {l_res: Box::new(p_eq), r_res: Box::new(pattern_match) };
+            let ex_and = Execution::And {
+                l_res: Box::new(p_eq),
+                r_res: Box::new(pattern_match),
+            };
             self.cache.lock().unwrap().insert(ex_and.clone(), None);
             ex_and
         };
@@ -380,23 +498,35 @@ impl SimpleEngine {
             (false, false) => main_match,
             (true, false) => {
                 let zero_prefix_ex = insert_zero_range(0, c_pos - 1);
-                let ex_and = Execution::And { l_res: Box::new(zero_prefix_ex), r_res: Box::new(main_match) };
+                let ex_and = Execution::And {
+                    l_res: Box::new(zero_prefix_ex),
+                    r_res: Box::new(main_match),
+                };
                 self.cache.lock().unwrap().insert(ex_and.clone(), None);
                 ex_and
-            },
+            }
             (false, true) => {
-                let zero_suffix_ex = insert_zero_range(c_pos + 1,  c_pos + remain_c - 1);
-                let ex_and = Execution::And { l_res: Box::new(main_match), r_res: Box::new(zero_suffix_ex) };
+                let zero_suffix_ex = insert_zero_range(c_pos + 1, c_pos + remain_c - 1);
+                let ex_and = Execution::And {
+                    l_res: Box::new(main_match),
+                    r_res: Box::new(zero_suffix_ex),
+                };
                 self.cache.lock().unwrap().insert(ex_and.clone(), None);
                 ex_and
-            },
+            }
             (true, true) => {
                 let zero_prefix_ex = insert_zero_range(0, c_pos - 1);
-                let zero_suffix_ex = insert_zero_range(c_pos + 1,  c_pos + remain_c - 1);
-                let ex_and = Execution::And { l_res: Box::new(zero_prefix_ex), r_res: Box::new(main_match) };
+                let zero_suffix_ex = insert_zero_range(c_pos + 1, c_pos + remain_c - 1);
+                let ex_and = Execution::And {
+                    l_res: Box::new(zero_prefix_ex),
+                    r_res: Box::new(main_match),
+                };
                 self.cache.lock().unwrap().insert(ex_and.clone(), None);
 
-                let final_and = Execution::And { l_res: Box::new(ex_and), r_res: Box::new(zero_suffix_ex)  };
+                let final_and = Execution::And {
+                    l_res: Box::new(ex_and),
+                    r_res: Box::new(zero_suffix_ex),
+                };
                 self.cache.lock().unwrap().insert(final_and.clone(), None);
                 final_and
             }
