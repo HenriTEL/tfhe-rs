@@ -1,13 +1,21 @@
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::time::Instant;
 use log::info;
-// use std::sync::{Arc, Mutex};
-// use rayon::prelude::*;
+use tfhe::FheInt16;
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 
 use tfhe::prelude::*;
 use tfhe::FheBool;
 
 use crate::ciphertext::{FheString, PaddingOptions};
+
+#[derive(Default, Debug, Copy, Clone)]
+pub struct MatchingOptions {
+    pub sof: bool, // Equivalent of the regex ^ special char
+    pub eof: bool, // Equivalent of the regex $ special char
+}
 
 pub enum Pattern {
     Clear(String),
@@ -60,8 +68,9 @@ enum ExecutionTree {
 }
 
 pub struct SimpleEngine {
-    // cache: Arc<Mutex< HashMap<Execution, Option<FheBool>> >>,
-    cache: HashMap<Execution, Option<FheBool>>,
+    cache: Arc<Mutex< HashMap<Execution, Option<FheBool>> >>,
+    // cache: HashMap<Execution, Option<FheBool>>,
+    // Mapping of an Or, And or Eq execution to its corresponding PatternMatch
     pm_cache: HashMap<Execution, Execution>,
 
     // ops_count: usize,
@@ -71,8 +80,8 @@ pub struct SimpleEngine {
 impl SimpleEngine {
     pub fn new() -> Self {
         Self {
-            // cache: Arc::new(Mutex::new(HashMap::new())),
-            cache: HashMap::new(),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            // cache: HashMap::new(),
             pm_cache: HashMap::new(),
 
             // ops_count: 0,
@@ -81,6 +90,7 @@ impl SimpleEngine {
     }
 
     pub fn has_match(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheBool {
+        let start = Instant::now();
         if pattern.has_padding() {
             panic!("Padding not supported for the pattern.");
         }
@@ -91,14 +101,19 @@ impl SimpleEngine {
 
         let final_op = self.build_execution_plan(content, pattern, match_options);
 
-        let mut remaining_ops: Vec<Execution> = self.cache.keys().map(|k| k.clone()).collect();
+        let mut remaining_ops: Vec<Execution> = self.cache.lock().unwrap().keys().map(|k| k.clone()).collect();
         let mut prev_len = remaining_ops.len() + 1;
+        info!("Initialized execution plan in {:?}.", start.elapsed());
 
         while remaining_ops.len() < prev_len {
             prev_len = remaining_ops.len();
-            remaining_ops = remaining_ops.iter()
+            // Idea for further speed improvements: do some branch prediction.
+            // For example when the final result look like (a | b) | c
+            // compute (a | b), (false | c), (true | c) in the last but one iteration
+            // so that we can directly retrieve the final result in the last iteration
+            remaining_ops = remaining_ops.par_iter()
                 .map(|execution, | {
-                    if let Some(_) = self.cache.get(execution).unwrap() {
+                    if let Some(_) = self.cache.lock().unwrap().get(execution).unwrap() {
                         return vec![];
                     }
                     let new_res = match execution {
@@ -109,28 +124,46 @@ impl SimpleEngine {
                                 if let Pattern::Encrypted(p) = pattern {
                                     Some(content.chars[*c_pos].byte.eq(p.chars[*p_pos].byte.clone()))
                                 } else {
-                                    panic!("Unexpected Clear pattern");
+                                    panic!("Unexpected clear pattern");
                                 }
                             },
                         },
-                        Execution::And { l_res, r_res } =>
-                            match (self.cache.get(&*l_res), self.cache.get(&*r_res)) {
-                                (Some(Some(l)), Some(Some(r))) => Some(l & r),
+                        Execution::And { l_res, r_res } => {
+                            let (m_l_res, m_r_res) = {
+                                let cache = self.cache.lock().unwrap();
+                                match (cache.get(&*l_res), cache.get(&*r_res)) {
+                                    (Some(l), Some(r)) => (l.clone(), r.clone()),
+                                    _ => (None, None),
+                                }
+                            };
+
+                            match (m_l_res, m_r_res) {
+                                (Some(l), Some(r)) => Some(l & r),
                                 _ => None,
+                            }
                         },
-                        Execution::Or { l_res, r_res } =>
-                        match (self.cache.get(&*l_res), self.cache.get(&*r_res)) {
-                            (Some(Some(l)), Some(Some(r))) => Some(l | r),
-                            _ => None,
-                    },
+                        Execution::Or { l_res, r_res } => {
+                            let (m_l_res, m_r_res) = {
+                                let cache = self.cache.lock().unwrap();
+                                match (cache.get(&*l_res), cache.get(&*r_res)) {
+                                    (Some(l), Some(r)) => (l.clone(), r.clone()),
+                                    _ => (None, None),
+                                }
+                            };
+
+                            match (m_l_res, m_r_res) {
+                                (Some(l), Some(r)) => Some(l | r),
+                                _ => None,
+                            }
+                        },
                         Execution::PatternMatch { .. } => None,
                     };
 
                     if let Some(ref res) = new_res {
-                        let _ = self.cache.get_mut(execution).unwrap().insert(res.clone());
+                        let _ = self.cache.lock().unwrap().get_mut(execution).unwrap().insert(res.clone());
                         // If there is a pattern match corresponding to this execution, set its result
                         if let Some(pm_exec) = self.pm_cache.get(execution) {
-                            let _ = self.cache.get_mut(pm_exec).unwrap().insert(res.clone());
+                            let _ = self.cache.lock().unwrap().get_mut(pm_exec).unwrap().insert(res.clone());
                         }
                         return vec![];
                     }
@@ -142,8 +175,17 @@ impl SimpleEngine {
         if remaining_ops.len() > 0 {
             panic!("Could not compute {} remaining operations.", remaining_ops.len());
         }
-        info!("Completed {} FHE operations.", self.cache.len());
-        self.cache.get(&final_op).unwrap().clone().unwrap()
+        let duration = start.elapsed();
+        info!("Completed {} FHE operations in {:?}.", self.cache.lock().unwrap().len(), duration);
+        self.cache.lock().unwrap().get(&final_op).unwrap().clone().unwrap()
+    }
+
+    pub fn find(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheInt16 {
+        FheInt16::encrypt_trivial(-1)
+    }
+
+    pub fn find_end(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> FheInt16 {
+        FheInt16::encrypt_trivial(-1)
     }
 
     fn build_execution_plan(&mut self, content: &FheString, pattern: &Pattern, match_options: MatchingOptions) -> Execution {
@@ -168,7 +210,7 @@ impl SimpleEngine {
             let remain_c = content.chars.len() - c_pos;
             let remain_p = pattern.len() - p_pos;
 
-            if self.cache.contains_key(&pattern_match) {
+            if self.cache.lock().unwrap().contains_key(&pattern_match) {
                 continue
             }
 
@@ -179,20 +221,19 @@ impl SimpleEngine {
                     Pattern::Encrypted(_) => PatternId::Index(p_pos),
                 };
                 let l_res = self.consume_pattern(c_pos, p_pos, p_id, remain_c, remain_p, match_options, content.padding);
-                self.cache.insert(l_res.clone(), None);
+                // self.cache.insert(l_res.clone(), None);
                 maybe_l_res = Some(l_res);
                 if remain_p > 1 {
                     match_candidates.push((c_pos + 1, p_pos + 1));
                 }
             }
         
-            // TODO remove (remain_p == 0 && content.padding.end) as it's dealt by the zero_suffix constraint
             let can_consume_zero = remain_c - 1 >= remain_p
                 && ((p_pos == 0 && content.padding.start) || (p_pos > 0 && content.padding.middle) || (remain_p == 0 && content.padding.end));
             let mut maybe_r_res: Option<Execution> = None;
             if can_consume_zero {
                 let r_res = self.consume_pattern(c_pos, p_pos, PatternId::Zero, remain_c, remain_p, match_options, content.padding);
-                self.cache.insert(r_res.clone(), None);
+                // self.cache.insert(r_res.clone(), None);
                 maybe_r_res = Some(r_res);
                 match_candidates.push((c_pos + 1, p_pos));
             }
@@ -200,7 +241,7 @@ impl SimpleEngine {
             let execution = match (maybe_l_res, maybe_r_res) {
                 (Some(l_res), Some(r_res)) => {
                     let ex = Execution::Or { l_res: Box::new(l_res), r_res: Box::new(r_res) };
-                    self.cache.insert(ex.clone(), None);
+                    self.cache.lock().unwrap().insert(ex.clone(), None);
                     ex
                 },
                 (Some(l_res), None) => l_res,
@@ -208,7 +249,7 @@ impl SimpleEngine {
                 (None, None) => panic!("Could not build branch at ({c_pos}, {p_pos})."),
             };
             self.pm_cache.insert(execution, pattern_match.clone());
-            self.cache.insert(pattern_match, None);
+            self.cache.lock().unwrap().insert(pattern_match, None);
         }
         final_op
     }
@@ -233,10 +274,10 @@ impl SimpleEngine {
                     },
                 };
 
-                if self.cache.contains_key(execution) {
+                if self.cache.lock().unwrap().contains_key(execution) {
                     return vec![];
                 }
-                self.cache.insert(execution.clone(), None);
+                self.cache.lock().unwrap().insert(execution.clone(), None);
 
                 children
             })
@@ -295,7 +336,7 @@ impl SimpleEngine {
             }
         };
 
-        // Make sure that the left nodes are even to increase cache hits
+        // Ensure that the left leaves are at even positions to increase cache hits
         let mut nodes: Vec<ExecutionTree> = if (c_end - c_start < 1) || (c_start % 2 > 0) {
             vec![ExecutionTree::Leaf(make_leaf_op(c_start))]
         } else {
@@ -314,7 +355,7 @@ impl SimpleEngine {
         let zero_suffixed = remain_c > 1 && remain_p == 1 && match_options.eof && padding.end;
 
         let p_eq = Execution::Eq(c_pos, p_id);
-        self.cache.insert(p_eq.clone(), None);
+        self.cache.lock().unwrap().insert(p_eq.clone(), None);
 
         let main_match = if remain_p < 2 {
             // This is the last char of the pattern to match
@@ -325,7 +366,7 @@ impl SimpleEngine {
                 _ => Execution::PatternMatch { c_pos: c_pos + 1, p_pos: p_pos + 1 },
             };
             let ex_and = Execution::And {l_res: Box::new(p_eq), r_res: Box::new(pattern_match) };
-            self.cache.insert(ex_and.clone(), None);
+            self.cache.lock().unwrap().insert(ex_and.clone(), None);
             ex_and
         };
 
@@ -340,32 +381,25 @@ impl SimpleEngine {
             (true, false) => {
                 let zero_prefix_ex = insert_zero_range(0, c_pos - 1);
                 let ex_and = Execution::And { l_res: Box::new(zero_prefix_ex), r_res: Box::new(main_match) };
-                self.cache.insert(ex_and.clone(), None);
+                self.cache.lock().unwrap().insert(ex_and.clone(), None);
                 ex_and
             },
             (false, true) => {
                 let zero_suffix_ex = insert_zero_range(c_pos + 1,  c_pos + remain_c - 1);
                 let ex_and = Execution::And { l_res: Box::new(main_match), r_res: Box::new(zero_suffix_ex) };
-                self.cache.insert(ex_and.clone(), None);
+                self.cache.lock().unwrap().insert(ex_and.clone(), None);
                 ex_and
             },
             (true, true) => {
                 let zero_prefix_ex = insert_zero_range(0, c_pos - 1);
                 let zero_suffix_ex = insert_zero_range(c_pos + 1,  c_pos + remain_c - 1);
                 let ex_and = Execution::And { l_res: Box::new(zero_prefix_ex), r_res: Box::new(main_match) };
-                self.cache.insert(ex_and.clone(), None);
+                self.cache.lock().unwrap().insert(ex_and.clone(), None);
 
                 let final_and = Execution::And { l_res: Box::new(ex_and), r_res: Box::new(zero_suffix_ex)  };
-                self.cache.insert(final_and.clone(), None);
+                self.cache.lock().unwrap().insert(final_and.clone(), None);
                 final_and
             }
         }
     }
-}
-
-
-#[derive(Default, Debug, Copy, Clone)]
-pub struct MatchingOptions {
-    pub sof: bool,
-    pub eof: bool,
 }

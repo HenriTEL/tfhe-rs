@@ -18,6 +18,8 @@ use log::info;
 use tfhe::{prelude::*, ClientKey, Config};
 use tfhe::{set_server_key, ConfigBuilder, FheUint8};
 
+use crate::ciphertext::MaxedFheUint8;
+
 #[derive(Parser, Debug)]
 #[command(name = "fhe_strings")]
 #[command(about = "A cli to test the FHE string API.", long_about = None)]
@@ -38,12 +40,13 @@ fn main() {
 	let clear_string = args.clear_string.unwrap();
 
 	let config = ConfigBuilder::default().build();
-	let client_key = gen_server_keys_for_threads(config, 1);
+	let client_key = gen_server_keys_for_threads(config, 20);
 
 	let str_client_key = client_key::StringClientKey::new(client_key.clone(), 4_u8);
 	let str_nopad_client_key = client_key::StringClientKey::new(client_key.clone(), 0_u8);
 
-	let fhe_string = str_client_key.encrypt(&clear_string).trim();
+	let maxed_enc_u8 = MaxedFheUint8 { val: FheUint8::encrypt(2_u8, &client_key), max_val: 4 };
+	let fhe_string = str_client_key.encrypt(&clear_string).trim().repeat(maxed_enc_u8);
 	let dec_string = str_client_key.decrypt(&fhe_string);
 	println!("Start string: '{dec_string}'");
 
@@ -132,8 +135,8 @@ fn gen_server_keys_for_threads(config: Config, num_threads: usize) -> ClientKey{
     let client_key = ClientKey::generate(config);
 	if num_threads > 1 {
 		rayon::ThreadPoolBuilder::new()
-		   // .use_current_thread()
-		   .num_threads(4) // TODO remove
+		   .use_current_thread()
+		   .num_threads(num_threads) 
 		   .spawn_handler(|thread| {
 			   let server_key = client_key.generate_server_key();
 			   std::thread::spawn(move || {
