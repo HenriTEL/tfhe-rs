@@ -68,9 +68,6 @@ pub struct SimpleEngine {
     // cache_hits: usize,
 }
 
-// fn pattern_match_to_execution(c_pos, p_pos, remain_c, remain_p, match_options) -> Execution {
-
-// }
 impl SimpleEngine {
     pub fn new() -> Self {
         Self {

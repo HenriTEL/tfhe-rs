@@ -10,7 +10,7 @@
 use tfhe::{prelude::*, FheBool, ClientKey};
 use tfhe::{ FheUint8, FheUint32};
 
-use crate::regex::simple_engine::{SimpleEngine, Pattern, MatchingOptions};
+use crate::pattern_matcher::{SimpleEngine, Pattern, MatchingOptions};
 
 pub const ASCII_WHITESPACES:  [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
 pub const UP_LOW_DISTANCE: u8 = 32;
@@ -135,36 +135,18 @@ impl FheString {
 
     // TODO merge common parts with trim_start()
     pub fn trim_end(&self) -> Self {
-        let mut new_bytes: Vec<FheUint8> = vec![];
-        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
-        let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
-        for c in self.chars.iter().rev() {
-            let must_zero =  prev_whitespace.clone() & (c.is_whitespace() | c.byte.eq(0));
-            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8);
-            new_bytes.push(new_byte);
-            prev_whitespace = prev_whitespace & (c.is_whitespace() | c.byte.eq(0));
-        }
+        let new_bytes = self.trim_chars(self.chars.iter().rev());
 
         Self {
-            chars: new_bytes.iter()
-                        .rev()
+            chars: new_bytes.iter().rev()
                         .map(|b|FheAsciiChar { byte: b.to_owned() })
                         .collect(),
-            padding: *self.padding.clone().end(true),
-        }
+            padding: *self.padding.clone().start(true),
+        } 
     }
 
-    // TODO merge duplicate code with trim_end
     pub fn trim_start(&self) -> Self {
-        let mut new_bytes: Vec<FheUint8> = vec![];
-        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
-        let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
-        for c in self.chars.iter() {
-            let must_zero =  prev_whitespace.clone() & (c.is_whitespace() | c.byte.eq(0));
-            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8);
-            new_bytes.push(new_byte);
-            prev_whitespace = prev_whitespace & (c.is_whitespace() | c.byte.eq(0));
-        }
+        let new_bytes = self.trim_chars(self.chars.iter());
 
         Self {
             chars: new_bytes.iter()
@@ -176,19 +158,6 @@ impl FheString {
 
     pub fn trim(&self) -> Self {
         self.trim_end().trim_start()
-    }
-
-    pub fn repeat_clear(&self, n: usize) -> Self {
-        let mut new_chars: Vec<FheAsciiChar> = vec![];
-        for _ in 0..n {
-            // TODO I assume that clone() is cryptographically safe here, i.e. not a bit to bit clone
-            new_chars.extend(self.chars.clone())
-        }
-
-        Self {
-            chars: new_chars,
-            padding: *self.padding.clone().middle(n > 0 && (self.padding.start | self.padding.end)),
-        }
     }
 
     // We build a vector with a lenght of the maximum possible repetitions.
@@ -231,6 +200,33 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
+    pub fn eq(&self, other: Self) -> FheBool {
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions { sof: true, eof: true };
+        let match_pattern = Pattern::Encrypted(other);
+        se.has_match(self, &match_pattern, match_options)
+    }
+
+    pub fn ne(&self, other: Self) -> FheBool {
+        !self.eq(other)
+    }
+
+    pub fn eq_ignore_case(&self, other: Self) -> FheBool {
+        self.to_lower().eq(other.to_lower())
+    }
+
+    pub fn repeat_clear(&self, n: usize) -> Self {
+        let mut new_chars: Vec<FheAsciiChar> = vec![];
+        for _ in 0..n {
+            new_chars.extend(self.chars.clone())
+        }
+
+        Self {
+            chars: new_chars,
+            padding: *self.padding.clone().middle(n > 0 && (self.padding.start | self.padding.end)),
+        }
+    }
+
     pub fn contains_clear(&self, pattern: &str) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions::default();
@@ -252,19 +248,18 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
-    pub fn eq(&self, other: Self) -> FheBool {
-        let mut se = SimpleEngine::new();
-        let match_options = MatchingOptions { sof: true, eof: true };
-        let match_pattern = Pattern::Encrypted(other);
-        se.has_match(self, &match_pattern, match_options)
-    }
+    fn trim_chars<'a>(&self, iter: impl Iterator<Item = &'a FheAsciiChar>) -> Vec<FheUint8> {
+        let mut new_bytes: Vec<FheUint8> = vec![];
+        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
+        let mut prev_whitespace = FheBool::try_encrypt_trivial(true).unwrap();
+        for c in iter {
+            let must_zero =  prev_whitespace.clone() & (c.is_whitespace() | c.byte.eq(0));
+            let new_byte = c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8);
+            new_bytes.push(new_byte);
+            prev_whitespace = prev_whitespace & (c.is_whitespace() | c.byte.eq(0));
+        }
 
-    pub fn ne(&self, other: Self) -> FheBool {
-        !self.eq(other)
-    }
-
-    pub fn eq_ignore_case(&self, other: Self) -> FheBool {
-        self.to_lower().eq(other.to_lower())
+        new_bytes
     }
 }
 

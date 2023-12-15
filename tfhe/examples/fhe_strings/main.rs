@@ -11,7 +11,7 @@
 use clap::Parser;
 mod ciphertext;
 mod client_key;
-mod regex;
+mod pattern_matcher;
 
 use env_logger::Env;
 use log::info;
