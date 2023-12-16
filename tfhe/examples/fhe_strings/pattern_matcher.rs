@@ -37,17 +37,24 @@ pub enum Pattern {
 }
 
 impl Pattern {
+    pub fn len(&self) -> usize {
+        match self {
+            Pattern::Clear(pattern) => pattern.len(),
+            Pattern::Encrypted(pattern) => pattern.chars.len(),
+        }
+    }
+
+    pub fn reversed(&self) -> Self {
+        match self {
+            Pattern::Encrypted(fhe_string) => Pattern::Encrypted(fhe_string.reversed()),
+            Pattern::Clear(string) => Pattern::Clear(string.chars().rev().collect()),
+        }
+    }
+
     fn has_padding(&self) -> bool {
         match self {
             Pattern::Clear(_) => false,
             Pattern::Encrypted(pattern) => pattern.has_padding(),
-        }
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            Pattern::Clear(pattern) => pattern.len(),
-            Pattern::Encrypted(pattern) => pattern.chars.len(),
         }
     }
 }
@@ -172,7 +179,7 @@ impl SimpleEngine {
 
         while remaining_ops.len() < prev_len {
             prev_len = remaining_ops.len();
-            // Idea for further speed improvements: do some branch prediction.
+            // Idea for further speed improvements: speculative execution.
             // For example when the final result look like (a | b) | c
             // compute (a | b), (false | c), (true | c) in the last but one iteration
             // so that we can directly retrieve the final result in the last iteration

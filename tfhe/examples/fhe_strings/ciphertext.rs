@@ -51,7 +51,7 @@ impl FheString {
     }
 
     pub fn trim_start(&self) -> Self {
-        let new_bytes = self.trim_chars(self.chars.iter());
+        let new_bytes = self.trim_helper(self.chars.iter());
 
         Self {
             chars: new_bytes
@@ -63,7 +63,7 @@ impl FheString {
     }
 
     pub fn trim_end(&self) -> Self {
-        let new_bytes = self.trim_chars(self.chars.iter().rev());
+        let new_bytes = self.trim_helper(self.chars.iter().rev());
 
         Self {
             chars: new_bytes
@@ -181,66 +181,11 @@ impl FheString {
     }
 
     pub fn strip_prefix(&self, pattern: FheString) -> Self {
-        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
-        let mut se = SimpleEngine::new();
-        let match_options = MatchingOptions {
-            sof: false,
-            eof: false,
-            result: MatchResult::RawStartIndex,
-        };
-        // TODO find a way to remove .clone() calls
-        let match_pattern = Pattern::Encrypted(pattern.clone());
-        let prefix_raw_index = se.find(self, &match_pattern, match_options);
-        let found_prefix = self.starts_with(pattern.clone());
-        let end_index =
-            prefix_raw_index + FheInt16::encrypt_trivial(pattern.chars.len() as i16 - 1);
-
-        Self {
-            chars: self
-                .chars
-                .par_iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let must_zero = found_prefix.clone() & end_index.ge(i as i16);
-                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
-                })
-                .map(|b| FheAsciiChar { byte: b.to_owned() })
-                .collect(),
-            padding: *self.padding.clone().start(true),
-        }
+        self.strip_helper(Pattern::Encrypted(pattern), true)
     }
-
-    // TODO merge duplicate code with strip_prefix
+    
     pub fn strip_suffix(&self, pattern: FheString) -> Self {
-        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
-        let rev_s = self.reversed();
-        let mut se = SimpleEngine::new();
-        let match_options = MatchingOptions {
-            sof: false,
-            eof: false,
-            result: MatchResult::RawStartIndex,
-        };
-        let match_pattern = Pattern::Encrypted(pattern.reversed());
-        let rev_find = se.find(&rev_s, &match_pattern, match_options);
-        let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
-        let p_len = FheInt16::encrypt_trivial(pattern.chars.len() as i16);
-
-        let suffix_raw_index = s_len - p_len - rev_find;
-        let found_suffix = self.ends_with(pattern.clone());
-
-        Self {
-            chars: self
-                .chars
-                .par_iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let must_zero = found_suffix.clone() & suffix_raw_index.le(i as i16);
-                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
-                })
-                .map(|b| FheAsciiChar { byte: b.to_owned() })
-                .collect(),
-            padding: *self.padding.clone().end(true),
-        }
+        self.strip_helper(Pattern::Encrypted(pattern), false)
     }
     // ----------------------------------------------------------
     // Functions with clear parameters
@@ -312,73 +257,29 @@ impl FheString {
     }
 
     pub fn strip_prefix_clear(&self, pattern: &str) -> Self {
-        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
-        let mut se = SimpleEngine::new();
-        let match_options = MatchingOptions {
-            sof: false,
-            eof: false,
-            result: MatchResult::RawStartIndex,
-        };
-        // TODO find a way to remove .clone() calls
-        let match_pattern = Pattern::Clear(pattern.to_owned());
-        let prefix_raw_index = se.find(self, &match_pattern, match_options);
-        let found_prefix = self.starts_with_clear(&pattern.clone());
-        let end_index =
-            prefix_raw_index + FheInt16::encrypt_trivial(pattern.bytes().len() as i16 - 1);
-
-        Self {
-            chars: self
-                .chars
-                .par_iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let must_zero = found_prefix.clone() & end_index.ge(i as i16);
-                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
-                })
-                .map(|b| FheAsciiChar { byte: b.to_owned() })
-                .collect(),
-            padding: *self.padding.clone().start(true),
-        }
+        self.strip_helper(Pattern::Clear(pattern.to_owned()), true)
     }
-
-    // TODO merge duplicate code with strip_prefix
+    
     pub fn strip_suffix_clear(&self, pattern: &str) -> Self {
-        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
-        let rev_s = self.reversed();
-        let rev_p: String = pattern.chars().rev().collect();
-        let mut se = SimpleEngine::new();
-        let match_options = MatchingOptions {
-            sof: false,
-            eof: false,
-            result: MatchResult::RawStartIndex,
-        };
-        let match_pattern = Pattern::Clear(rev_p);
-        let rev_find = se.find(&rev_s, &match_pattern, match_options);
-        let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
-        let p_len = FheInt16::encrypt_trivial(pattern.bytes().len() as i16);
+        self.strip_helper(Pattern::Clear(pattern.to_owned()), false)
+    }
 
-        let suffix_raw_index = s_len - p_len - rev_find;
-        let found_suffix = self.ends_with_clear(pattern);
-
+    pub fn reversed(&self) -> Self {
         Self {
-            chars: self
-                .chars
-                .par_iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let must_zero = found_suffix.clone() & suffix_raw_index.le(i as i16);
-                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
-                })
-                .map(|b| FheAsciiChar { byte: b.to_owned() })
-                .collect(),
-            padding: *self.padding.clone().end(true),
+            chars: self.chars.iter().rev().cloned().collect(),
+            padding: PaddingOptions {
+                start: self.padding.end,
+                middle: self.padding.middle,
+                end: self.padding.start,
+            },
         }
     }
+
     //
     // Private functions
     //
 
-    fn trim_chars<'a>(&self, iter: impl Iterator<Item = &'a FheAsciiChar>) -> Vec<FheUint8> {
+    fn trim_helper<'a>(&self, iter: impl Iterator<Item = &'a FheAsciiChar>) -> Vec<FheUint8> {
         let mut new_bytes: Vec<FheUint8> = vec![];
         let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
         let mut prev_zeroed = FheBool::try_encrypt_trivial(true).unwrap();
@@ -393,14 +294,56 @@ impl FheString {
         new_bytes
     }
 
-    fn reversed(&self) -> Self {
+    fn strip_helper(&self, pattern: Pattern, is_prefix: bool) -> Self {
+        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions {
+            sof: false,
+            eof: false,
+            result: MatchResult::RawStartIndex,
+        };
+    
+        // let match_pattern = pattern.to_pattern();
+        let raw_index = if is_prefix {
+            se.find(self, &pattern, match_options)
+        } else {
+            let rev_s = self.reversed();
+            let rev_find = se.find(&rev_s, &pattern.reversed(), match_options);
+            let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
+            let p_len = FheInt16::encrypt_trivial(pattern.len() as i16);
+            s_len - p_len - rev_find
+        };
+    
+        let found = if is_prefix {
+            match &pattern {
+                Pattern::Encrypted(p) => self.starts_with(p.clone()),
+                Pattern::Clear(p) => self.starts_with_clear(p),
+            }
+        } else {
+            match &pattern {
+                Pattern::Encrypted(p) => self.ends_with(p.clone()),
+                Pattern::Clear(p) => self.ends_with_clear(p),
+            }
+        };
+    
+        let end_index = if is_prefix {
+            raw_index + FheInt16::encrypt_trivial(pattern.len() as i16 - 1)
+        } else {
+            raw_index
+        };
+    
         Self {
-            chars: self.chars.iter().rev().cloned().collect(),
-            padding: PaddingOptions {
-                start: self.padding.end,
-                middle: self.padding.middle,
-                end: self.padding.start,
-            },
+            chars: self
+                .chars
+                .par_iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let must_zero = found.clone() & if is_prefix { end_index.ge(i as i16) } else { end_index.le(i as i16) };
+                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
+                })
+                .map(|b| FheAsciiChar { byte: b.to_owned() })
+                .collect(),
+            padding: if is_prefix { *self.padding.clone().start(true) } else { *self.padding.clone().end(true) },
         }
     }
 }

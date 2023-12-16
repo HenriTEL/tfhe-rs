@@ -72,6 +72,18 @@ fn main() {
     let dec_string = str_client_key.decrypt(&fhe_op);
     println!("Strip suffix: {dec_string}");
 
+    let fhe_op = fhe_string.clone().strip_prefix(fhe_pattern.clone());
+    let dec_string = str_client_key.decrypt(&fhe_op);
+    println!("Strip prefix: {dec_string}");
+
+    let fhe_op = fhe_string.clone().strip_suffix_clear(&pattern);
+    let dec_string = str_client_key.decrypt(&fhe_op);
+    println!("Strip suffix clear: {dec_string}");
+
+    let fhe_op = fhe_string.clone().strip_prefix_clear(&pattern);
+    let dec_string = str_client_key.decrypt(&fhe_op);
+    println!("Strip prefix clear: {dec_string}");
+
     // let fhe_op = fhe_string.clone() + fhe_pattern.clone();
     // let dec_string = str_client_key.decrypt(&fhe_op);
     // println!("Concat: {dec_string}");
