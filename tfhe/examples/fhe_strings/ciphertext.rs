@@ -290,6 +290,90 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
+    pub fn find_clear(&self, pattern: &str) -> FheInt16 {
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions {
+            sof: false,
+            eof: false,
+            result: MatchResult::StartIndex,
+        };
+        let match_pattern = Pattern::Clear(pattern.to_owned());
+        se.find(self, &match_pattern, match_options)
+    }
+
+    pub fn rfind_clear(&self, pattern: &str) -> FheInt16 {
+        let rev_s = self.reversed();
+        let rev_p: String = pattern.clone().chars().rev().collect();
+        let rev_find = rev_s.find_clear(&rev_p);
+        let s_len = FheInt16::cast_from(self.len());
+        let p_len = FheInt16::encrypt_trivial(pattern.len() as i16);
+
+        FheInt16::cast_from(rev_find.gt(-1)) * (s_len - p_len - rev_find + 1) - 1
+    }
+
+    pub fn strip_prefix_clear(&self, pattern: &str) -> Self {
+        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions {
+            sof: false,
+            eof: false,
+            result: MatchResult::RawStartIndex,
+        };
+        // TODO find a way to remove .clone() calls
+        let match_pattern = Pattern::Clear(pattern.to_owned());
+        let prefix_raw_index = se.find(self, &match_pattern, match_options);
+        let found_prefix = self.starts_with_clear(&pattern.clone());
+        let end_index =
+            prefix_raw_index + FheInt16::encrypt_trivial(pattern.bytes().len() as i16 - 1);
+
+        Self {
+            chars: self
+                .chars
+                .par_iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let must_zero = found_prefix.clone() & end_index.ge(i as i16);
+                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
+                })
+                .map(|b| FheAsciiChar { byte: b.to_owned() })
+                .collect(),
+            padding: *self.padding.clone().start(true),
+        }
+    }
+
+    // TODO merge duplicate code with strip_prefix
+    pub fn strip_suffix_clear(&self, pattern: &str) -> Self {
+        let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
+        let rev_s = self.reversed();
+        let rev_p: String = pattern.chars().rev().collect();
+        let mut se = SimpleEngine::new();
+        let match_options = MatchingOptions {
+            sof: false,
+            eof: false,
+            result: MatchResult::RawStartIndex,
+        };
+        let match_pattern = Pattern::Clear(rev_p);
+        let rev_find = se.find(&rev_s, &match_pattern, match_options);
+        let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
+        let p_len = FheInt16::encrypt_trivial(pattern.bytes().len() as i16);
+
+        let suffix_raw_index = s_len - p_len - rev_find;
+        let found_suffix = self.ends_with_clear(pattern);
+
+        Self {
+            chars: self
+                .chars
+                .par_iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let must_zero = found_suffix.clone() & suffix_raw_index.le(i as i16);
+                    c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
+                })
+                .map(|b| FheAsciiChar { byte: b.to_owned() })
+                .collect(),
+            padding: *self.padding.clone().end(true),
+        }
+    }
     //
     // Private functions
     //
@@ -339,11 +423,6 @@ impl std::ops::Add for FheString {
     }
 }
 
-// impl PartialOrd for FheString {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         self.value.partial_cmp(&other.value)
-//     }
-// }
 #[derive(Clone)]
 pub struct FheAsciiChar {
     pub byte: FheUint8,
@@ -386,12 +465,6 @@ impl FheAsciiChar {
         }
     }
 }
-
-// impl CastFrom<FheAsciiChar> for FheUint32 {
-//     fn cast_from(input: FheAsciiChar) -> Self {
-//         Self::cast_from(input.byte)
-//     }
-// }
 
 #[derive(Default, Debug, Copy, Clone)]
 pub struct PaddingOptions {
