@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use tfhe::prelude::*;
 use tfhe::{ClientKey, FheBool, FheInt16, FheUint16, FheUint8};
 
-use crate::pattern_matcher::{MatchingOptions, Pattern, SimpleEngine, MatchResult};
+use crate::pattern_matcher::{MatchResult, MatchingOptions, Pattern, SimpleEngine};
 
 const ASCII_WHITESPACES: [u8; 5] = [9, 10, 11, 13, 32]; // Tab, Newline, Vertical Tab, Carriage Return, Space
 const UP_LOW_DISTANCE: u8 = 32;
@@ -176,7 +176,7 @@ impl FheString {
         let rev_find = rev_s.find(pattern.reversed());
         let s_len = FheInt16::cast_from(self.len());
         let p_len = FheInt16::encrypt_trivial(pattern.chars.len() as i16);
-        
+
         FheInt16::cast_from(rev_find.gt(-1)) * (s_len - p_len - rev_find + 1) - 1
     }
 
@@ -192,7 +192,8 @@ impl FheString {
         let match_pattern = Pattern::Encrypted(pattern.clone());
         let prefix_raw_index = se.find(self, &match_pattern, match_options);
         let found_prefix = self.starts_with(pattern.clone());
-        let end_index = prefix_raw_index + FheInt16::encrypt_trivial(pattern.chars.len() as i16 - 1);
+        let end_index =
+            prefix_raw_index + FheInt16::encrypt_trivial(pattern.chars.len() as i16 - 1);
 
         Self {
             chars: self
@@ -315,7 +316,7 @@ impl FheString {
                 start: self.padding.end,
                 middle: self.padding.middle,
                 end: self.padding.start,
-            }
+            },
         }
     }
 }

@@ -67,7 +67,7 @@ fn main() {
     // let fhe_op = fhe_string.clone().rfind(fhe_pattern.clone());
     // let dec_res: i16 = fhe_op.decrypt(&client_key);
     // println!("Rfind: {dec_res}");
-	
+
     let fhe_op = fhe_string.clone().strip_suffix(fhe_pattern.clone());
     let dec_string = str_client_key.decrypt(&fhe_op);
     println!("Strip suffix: {dec_string}");

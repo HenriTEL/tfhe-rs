@@ -13,7 +13,7 @@ use crate::ciphertext::{FheString, PaddingOptions};
 #[derive(Clone)]
 enum FheResult {
     Bool(FheBool),
-    Uint(FheUint16)
+    Uint(FheUint16),
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -184,12 +184,16 @@ impl SimpleEngine {
                     }
                     let new_res = match execution {
                         Execution::Eq(c_pos, p_id) => match p_id {
-                            PatternId::Zero => Some(FheResult::Bool(content.chars[*c_pos].byte.eq(0))),
-                            PatternId::Byte(b) => Some(FheResult::Bool(content.chars[*c_pos].byte.eq(*b))),
+                            PatternId::Zero => {
+                                Some(FheResult::Bool(content.chars[*c_pos].byte.eq(0)))
+                            }
+                            PatternId::Byte(b) => {
+                                Some(FheResult::Bool(content.chars[*c_pos].byte.eq(*b)))
+                            }
                             PatternId::Index(p_pos) => {
                                 if let Pattern::Encrypted(p) = pattern {
                                     Some(FheResult::Bool(
-                                        content.chars[*c_pos].byte.eq(p.chars[*p_pos].byte.clone())
+                                        content.chars[*c_pos].byte.eq(p.chars[*p_pos].byte.clone()),
                                     ))
                                 } else {
                                     panic!("Unexpected clear pattern");
@@ -206,10 +210,12 @@ impl SimpleEngine {
                             };
 
                             match (m_l_res, m_r_res) {
-                                (Some(FheResult::Bool(l)), Some(FheResult::Bool(r))) => Some(FheResult::Bool(l & r)),
+                                (Some(FheResult::Bool(l)), Some(FheResult::Bool(r))) => {
+                                    Some(FheResult::Bool(l & r))
+                                }
                                 _ => None,
                             }
-                        },
+                        }
                         Execution::Or { l_res, r_res } => {
                             let (m_l_res, m_r_res) = {
                                 let cache = self.cache.lock().unwrap();
@@ -220,10 +226,12 @@ impl SimpleEngine {
                             };
 
                             match (m_l_res, m_r_res) {
-                                (Some(FheResult::Bool(l)), Some(FheResult::Bool(r))) => Some(FheResult::Bool(l | r)),
+                                (Some(FheResult::Bool(l)), Some(FheResult::Bool(r))) => {
+                                    Some(FheResult::Bool(l | r))
+                                }
                                 _ => None,
                             }
-                        },
+                        }
                         Execution::StartIndex { l_res, r_res } => {
                             let (m_l_res, m_r_res) = {
                                 let cache = self.cache.lock().unwrap();
@@ -238,24 +246,34 @@ impl SimpleEngine {
                                     let u16_max = FheUint16::encrypt_trivial(u16::MAX);
                                     let new_r = r & (FheUint16::cast_from(!l.gt(0)) * u16_max);
                                     Some(FheResult::Uint(l | new_r))
-                                },
+                                }
                                 _ => None,
                             }
-                        },
+                        }
                         Execution::IndexMatch { c_pos, p_pos } => {
-                            let pattern_match = Execution::PatternMatch { c_pos: *c_pos, p_pos: *p_pos };
-                            let pm_res = self.cache.lock().unwrap().get(&pattern_match).unwrap().clone();
+                            let pattern_match = Execution::PatternMatch {
+                                c_pos: *c_pos,
+                                p_pos: *p_pos,
+                            };
+                            let pm_res = self
+                                .cache
+                                .lock()
+                                .unwrap()
+                                .get(&pattern_match)
+                                .unwrap()
+                                .clone();
 
                             if let Some(FheResult::Bool(res)) = pm_res {
                                 let must_keep = res & content.chars[*c_pos].byte.gt(0);
                                 let u16_max = FheUint16::encrypt_trivial(u16::MAX);
                                 Some(FheResult::Uint(
-                                    FheUint16::encrypt_trivial((c_pos + 1) as u16) & (FheUint16::cast_from(must_keep) * u16_max)
+                                    FheUint16::encrypt_trivial((c_pos + 1) as u16)
+                                        & (FheUint16::cast_from(must_keep) * u16_max),
                                 ))
                             } else {
                                 None
                             }
-                        },
+                        }
                         Execution::PatternMatch { .. } => None,
                     };
 
@@ -324,8 +342,9 @@ impl SimpleEngine {
         let nodes = self.build_leaves(0, max_start, PatternId::Index(0), op_type);
         let root = self.build_bitwise_execution_tree(nodes, op_type);
 
-        final_op = self.insert_execution_tree(root);
-        let mut match_candidates: Vec<(usize, usize)> = (0..=max_start).map(|c_pos| (c_pos, 0)).collect();
+        let final_op = self.insert_execution_tree(root);
+        let mut match_candidates: Vec<(usize, usize)> =
+            (0..=max_start).map(|c_pos| (c_pos, 0)).collect();
 
         while let Some((c_pos, p_pos)) = match_candidates.pop() {
             let pattern_match = Execution::PatternMatch { c_pos, p_pos };
@@ -499,14 +518,13 @@ impl SimpleEngine {
                 } else {
                     panic!("Unexpected PatternId");
                 }
-            },
+            }
             "start_index" => {
                 if let PatternId::Index(p_pos) = p_id {
                     Execution::IndexMatch { c_pos, p_pos }
                 } else {
                     panic!("Unexpected PatternId");
                 }
-
             }
             s => panic!("Unexpected bitwise operation type '{s}'."),
         };
@@ -612,12 +630,10 @@ impl SimpleEngine {
 
 fn nb_zeros_before(content: &FheString, index: FheUint16) -> FheInt16 {
     let mut res = FheUint16::encrypt_trivial(0);
-    content.chars.iter()
-        .enumerate()
-        .for_each(|(i, c)| {
-            let must_count = c.byte.eq(0) & index.gt(i as u16);
-            res = res.clone() + FheUint16::cast_from(must_count);
-        });
+    content.chars.iter().enumerate().for_each(|(i, c)| {
+        let must_count = c.byte.eq(0) & index.gt(i as u16);
+        res = res.clone() + FheUint16::cast_from(must_count);
+    });
 
     FheInt16::cast_from(res)
 }
