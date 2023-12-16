@@ -21,7 +21,6 @@ pub enum MatchResult {
     #[default]
     Bool,
     StartIndex,
-    EndIndex,
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -243,9 +242,10 @@ impl SimpleEngine {
                             let pm_res = self.cache.lock().unwrap().get(&pattern_match).unwrap().clone();
 
                             if let Some(FheResult::Bool(res)) = pm_res {
+                                let must_keep = res & content.chars[*c_pos].byte.gt(0);
                                 let u16_max = FheUint16::encrypt_trivial(u16::MAX);
                                 Some(FheResult::Uint(
-                                    FheUint16::encrypt_trivial((c_pos + 1) as u16) & (FheUint16::cast_from(res) * u16_max)
+                                    FheUint16::encrypt_trivial((c_pos + 1) as u16) & (FheUint16::cast_from(must_keep) * u16_max)
                                 ))
                             } else {
                                 None
@@ -316,7 +316,6 @@ impl SimpleEngine {
         let op_type = match match_options.result {
             MatchResult::Bool => "or",
             MatchResult::StartIndex => "start_index",
-            MatchResult::EndIndex => "end_index",
         };
         let nodes = self.build_leaves(0, max_start, PatternId::Index(0), op_type);
         let root = self.build_bitwise_execution_tree(nodes, op_type);
