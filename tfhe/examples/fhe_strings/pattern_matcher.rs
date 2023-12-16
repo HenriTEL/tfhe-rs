@@ -21,13 +21,14 @@ pub enum MatchResult {
     #[default]
     Bool,
     StartIndex,
+    RawStartIndex,
 }
 
 #[derive(Default, Debug, Copy, Clone)]
 pub struct MatchingOptions {
     pub sof: bool, // Equivalent of the regex ^ special char
     pub eof: bool, // Equivalent of the regex $ special char
-    pub result: MatchResult, 
+    pub result: MatchResult,
 }
 
 pub enum Pattern {
@@ -132,7 +133,11 @@ impl SimpleEngine {
         match_options: MatchingOptions,
     ) -> FheInt16 {
         if let FheResult::Uint(result) = self.find_match(content, pattern, match_options) {
-            let shift_count = FheInt16::cast_from(result.gt(1)) * nb_zeros_before(content, result.clone());
+            let shift_count = if let MatchResult::RawStartIndex = match_options.result {
+                FheInt16::encrypt_trivial(0)
+            } else {
+                FheInt16::cast_from(result.gt(1)) * nb_zeros_before(content, result.clone())
+            };
             return FheInt16::cast_from(result) - shift_count - 1;
         }
         panic!("Unexpected FheResult");
@@ -307,7 +312,6 @@ impl SimpleEngine {
         pattern: &Pattern,
         match_options: MatchingOptions,
     ) -> Execution {
-        let mut final_op = Execution::PatternMatch { c_pos: 0, p_pos: 0 };
         let max_start = if match_options.sof {
             0
         } else {
@@ -315,7 +319,7 @@ impl SimpleEngine {
         };
         let op_type = match match_options.result {
             MatchResult::Bool => "or",
-            MatchResult::StartIndex => "start_index",
+            MatchResult::StartIndex | MatchResult::RawStartIndex => "start_index",
         };
         let nodes = self.build_leaves(0, max_start, PatternId::Index(0), op_type);
         let root = self.build_bitwise_execution_tree(nodes, op_type);

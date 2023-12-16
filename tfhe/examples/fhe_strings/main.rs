@@ -60,21 +60,17 @@ fn main() {
     let pattern = args.pattern.unwrap();
     let fhe_pattern = str_nopad_client_key.encrypt(&pattern);
 
-    let fhe_string_len = fhe_string.len();
-    let dec_int: u16 = fhe_string_len.decrypt(&client_key);
-    println!("Len: {dec_int}");
+    // let fhe_string_len = fhe_string.len();
+    // let dec_int: u16 = fhe_string_len.decrypt(&client_key);
+    // println!("Len: {dec_int}"); 0cou00cou0
 
-    let fhe_op = fhe_string.clone().find(fhe_pattern.clone());
-    let dec_res: i16 = fhe_op.decrypt(&client_key);
-    println!("Find: {dec_res}");
-
-    let fhe_op = fhe_string.clone().rfind(fhe_pattern.clone());
-    let dec_res: i16 = fhe_op.decrypt(&client_key);
-    println!("Rfind: {dec_res}");
+    // let fhe_op = fhe_string.clone().rfind(fhe_pattern.clone());
+    // let dec_res: i16 = fhe_op.decrypt(&client_key);
+    // println!("Rfind: {dec_res}");
 	
-    let fhe_op = fhe_string.clone().strip_prefix(fhe_pattern.clone());
+    let fhe_op = fhe_string.clone().strip_suffix(fhe_pattern.clone());
     let dec_string = str_client_key.decrypt(&fhe_op);
-    println!("Strip prefix: {dec_string}");
+    println!("Strip suffix: {dec_string}");
 
     // let fhe_op = fhe_string.clone() + fhe_pattern.clone();
     // let dec_string = str_client_key.decrypt(&fhe_op);

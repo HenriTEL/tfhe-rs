@@ -184,13 +184,15 @@ impl FheString {
         let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
-            sof: true,
+            sof: false,
             eof: false,
-            result: MatchResult::EndIndex,
+            result: MatchResult::RawStartIndex,
         };
-        let match_pattern = Pattern::Encrypted(pattern);
-        let end_index = se.find(self, &match_pattern, match_options);
-        let found_prefix = end_index.gt(-1);
+        // TODO find a way to remove .clone() calls
+        let match_pattern = Pattern::Encrypted(pattern.clone());
+        let prefix_raw_index = se.find(self, &match_pattern, match_options);
+        let found_prefix = self.starts_with(pattern.clone());
+        let end_index = prefix_raw_index + FheInt16::encrypt_trivial(pattern.chars.len() as i16 - 1);
 
         Self {
             chars: self
@@ -207,17 +209,23 @@ impl FheString {
         }
     }
 
+    // TODO merge duplicate code with strip_prefix
     pub fn strip_suffix(&self, pattern: FheString) -> Self {
         let fhe_max_u8 = FheUint8::encrypt_trivial(u8::MAX);
+        let rev_s = self.reversed();
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
             sof: false,
-            eof: true,
-            result: MatchResult::StartIndex,
+            eof: false,
+            result: MatchResult::RawStartIndex,
         };
-        let match_pattern = Pattern::Encrypted(pattern);
-        let start_index = se.find(self, &match_pattern, match_options);
-        let found_suffix = start_index.gt(-1);
+        let match_pattern = Pattern::Encrypted(pattern.reversed());
+        let rev_find = se.find(&rev_s, &match_pattern, match_options);
+        let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
+        let p_len = FheInt16::encrypt_trivial(pattern.chars.len() as i16);
+
+        let suffix_raw_index = s_len - p_len - rev_find;
+        let found_suffix = self.ends_with(pattern.clone());
 
         Self {
             chars: self
@@ -225,7 +233,7 @@ impl FheString {
                 .par_iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let must_zero = found_suffix.clone() & start_index.le(i as i16);
+                    let must_zero = found_suffix.clone() & suffix_raw_index.le(i as i16);
                     c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
                 })
                 .map(|b| FheAsciiChar { byte: b.to_owned() })
