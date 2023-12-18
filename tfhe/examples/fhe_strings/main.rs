@@ -46,7 +46,7 @@ fn main() {
     let clear_str = args.clear_string.unwrap();
 
     let config = ConfigBuilder::default().build();
-    let client_key = gen_server_keys_for_threads(config, 20);
+    let client_key = gen_server_keys_for_threads(config, 64);
 
     println!(
         "{0: <20} | {1: <10} | {2: <10} | {3: <10} | {4: <10}",
@@ -96,7 +96,7 @@ fn main() {
     }
     common_pattern_fn.extend(["eq", "ne", "eq_ignore_case"]);
     let fhe_pattern = str_client_key.encrypt(&clear_pattern);
-    println!("");
+    println!();
     common_pattern_fn.into_iter().for_each(|function| {
         check_result_enc_pattern(
             &str_client_key,
@@ -282,7 +282,7 @@ fn check_repeat(
         "{0: <20} | {1: <10} | {2: <10} | {3: <10} | {4: <10}",
         function, results_match, duration, std_result, clear_result
     );
-    println!("");
+    println!();
 
     let maxed_enc_u8 = MaxedFheUint8 {
         val: FheUint8::encrypt(2_u8, &client_key.key),
