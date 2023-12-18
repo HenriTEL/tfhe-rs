@@ -1,14 +1,12 @@
-use log::info;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use tfhe::prelude::*;
 use tfhe::{FheBool, FheInt16, FheUint16};
 
-use crate::ciphertext::{FheString, PaddingOptions};
+use crate::ciphertext::{FheString, Padding};
 
 #[derive(Clone)]
 enum FheResult {
@@ -31,30 +29,23 @@ pub struct MatchingOptions {
     pub result: MatchResult,
 }
 
-pub enum Pattern {
+pub enum Pattern<'a> {
     Clear(String),
-    Encrypted(FheString),
+    Encrypted(&'a FheString),
 }
 
-impl Pattern {
+impl<'a> Pattern<'a> {
     pub fn len(&self) -> usize {
         match self {
-            Pattern::Clear(pattern) => pattern.len(),
-            Pattern::Encrypted(pattern) => pattern.chars.len(),
-        }
-    }
-
-    pub fn reversed(&self) -> Self {
-        match self {
-            Pattern::Encrypted(fhe_string) => Pattern::Encrypted(fhe_string.reversed()),
-            Pattern::Clear(string) => Pattern::Clear(string.chars().rev().collect()),
+            Self::Clear(pattern) => pattern.len(),
+            Self::Encrypted(pattern) => pattern.chars.len(),
         }
     }
 
     fn has_padding(&self) -> bool {
         match self {
-            Pattern::Clear(_) => false,
-            Pattern::Encrypted(pattern) => pattern.has_padding(),
+            Self::Clear(_) => false,
+            Self::Encrypted(pattern) => pattern.has_padding(),
         }
     }
 }
@@ -156,7 +147,6 @@ impl SimpleEngine {
         pattern: &Pattern,
         match_options: MatchingOptions,
     ) -> FheResult {
-        let start = Instant::now();
         if pattern.has_padding() {
             panic!("Padding not supported for the pattern.");
         }
@@ -175,7 +165,6 @@ impl SimpleEngine {
         let mut remaining_ops: Vec<Execution> =
             self.cache.lock().unwrap().keys().cloned().collect();
         let mut prev_len = remaining_ops.len() + 1;
-        info!("Initialized execution plan in {:?}.", start.elapsed());
 
         while remaining_ops.len() < prev_len {
             prev_len = remaining_ops.len();
@@ -316,12 +305,6 @@ impl SimpleEngine {
                 remaining_ops.len()
             );
         }
-        let duration = start.elapsed();
-        info!(
-            "Completed ~{} FHE operations in {:?}.",
-            self.cache.lock().unwrap().len(),
-            duration
-        );
         self.cache
             .lock()
             .unwrap()
@@ -557,7 +540,7 @@ impl SimpleEngine {
         p_range: (usize, usize),
         p_id: PatternId,
         match_options: MatchingOptions,
-        padding: PaddingOptions,
+        padding: Padding,
     ) -> Execution {
         let (c_pos, remain_c) = c_range;
         let (p_pos, remain_p) = p_range;

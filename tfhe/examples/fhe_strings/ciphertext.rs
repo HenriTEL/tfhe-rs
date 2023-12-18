@@ -11,7 +11,7 @@ const UP_LOW_DISTANCE: u8 = 32;
 #[derive(Clone)]
 pub struct FheString {
     pub chars: Vec<FheAsciiChar>,
-    pub padding: PaddingOptions,
+    pub padding: Padding,
 }
 
 impl FheString {
@@ -36,14 +36,14 @@ impl FheString {
         FheUint8::eq(&first_byte.byte, 0)
     }
 
-    pub fn to_upper(&self) -> Self {
+    pub fn to_uppercase(&self) -> Self {
         Self {
             chars: self.chars.iter().map(|c| c.to_upper()).collect(),
             padding: self.padding,
         }
     }
 
-    pub fn to_lower(&self) -> Self {
+    pub fn to_lowercase(&self) -> Self {
         Self {
             chars: self.chars.iter().map(|c| c.to_lower()).collect(),
             padding: self.padding,
@@ -112,14 +112,14 @@ impl FheString {
         }
     }
 
-    pub fn contains(&self, pattern: FheString) -> FheBool {
+    pub fn contains(&self, pattern: &FheString) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions::default();
         let match_pattern = Pattern::Encrypted(pattern);
         se.has_match(self, &match_pattern, match_options)
     }
 
-    pub fn starts_with(&self, pattern: FheString) -> FheBool {
+    pub fn starts_with(&self, pattern: &FheString) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
             sof: true,
@@ -130,7 +130,7 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
-    pub fn ends_with(&self, pattern: FheString) -> FheBool {
+    pub fn ends_with(&self, pattern: &FheString) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
             sof: false,
@@ -141,7 +141,7 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
-    pub fn eq(&self, other: Self) -> FheBool {
+    pub fn eq(&self, other: &Self) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
             sof: true,
@@ -152,15 +152,15 @@ impl FheString {
         se.has_match(self, &match_pattern, match_options)
     }
 
-    pub fn ne(&self, other: Self) -> FheBool {
+    pub fn ne(&self, other: &Self) -> FheBool {
         !self.eq(other)
     }
 
-    pub fn eq_ignore_case(&self, other: Self) -> FheBool {
-        self.to_lower().eq(other.to_lower())
+    pub fn eq_ignore_case(&self, other: &Self) -> FheBool {
+        self.to_lowercase().eq(&other.to_lowercase())
     }
 
-    pub fn find(&self, pattern: FheString) -> FheInt16 {
+    pub fn find(&self, pattern: &FheString) -> FheInt16 {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
             sof: false,
@@ -171,27 +171,29 @@ impl FheString {
         se.find(self, &match_pattern, match_options)
     }
 
-    pub fn rfind(&self, pattern: FheString) -> FheInt16 {
+    pub fn rfind(&self, pattern: &FheString) -> FheInt16 {
         let rev_s = self.reversed();
-        let rev_find = rev_s.find(pattern.reversed());
+        let rev_find = rev_s.find(&pattern.reversed());
         let s_len = FheInt16::cast_from(self.len());
         let p_len = FheInt16::encrypt_trivial(pattern.chars.len() as i16);
 
         FheInt16::cast_from(rev_find.gt(-1)) * (s_len - p_len - rev_find + 1) - 1
     }
 
-    pub fn strip_prefix(&self, pattern: FheString) -> Self {
+    pub fn strip_prefix(&self, pattern: &FheString) -> Self {
         self.strip_helper(Pattern::Encrypted(pattern), true)
     }
-    
-    pub fn strip_suffix(&self, pattern: FheString) -> Self {
+
+    pub fn strip_suffix(&self, pattern: &FheString) -> Self {
         self.strip_helper(Pattern::Encrypted(pattern), false)
     }
+    // --------------------------------------------------------------------------
+
     // ----------------------------------------------------------
     // Functions with clear parameters
     // ----------------------------------------------------------
 
-    pub fn repeat_clear(&self, n: usize) -> Self {
+    pub fn repeat_clear(&self, n: u8) -> Self {
         let mut new_chars: Vec<FheAsciiChar> = vec![];
         for _ in 0..n {
             new_chars.extend(self.chars.clone())
@@ -248,7 +250,7 @@ impl FheString {
 
     pub fn rfind_clear(&self, pattern: &str) -> FheInt16 {
         let rev_s = self.reversed();
-        let rev_p: String = pattern.clone().chars().rev().collect();
+        let rev_p: String = pattern.chars().rev().collect();
         let rev_find = rev_s.find_clear(&rev_p);
         let s_len = FheInt16::cast_from(self.len());
         let p_len = FheInt16::encrypt_trivial(pattern.len() as i16);
@@ -259,7 +261,7 @@ impl FheString {
     pub fn strip_prefix_clear(&self, pattern: &str) -> Self {
         self.strip_helper(Pattern::Clear(pattern.to_owned()), true)
     }
-    
+
     pub fn strip_suffix_clear(&self, pattern: &str) -> Self {
         self.strip_helper(Pattern::Clear(pattern.to_owned()), false)
     }
@@ -267,7 +269,7 @@ impl FheString {
     pub fn reversed(&self) -> Self {
         Self {
             chars: self.chars.iter().rev().cloned().collect(),
-            padding: PaddingOptions {
+            padding: Padding {
                 start: self.padding.end,
                 middle: self.padding.middle,
                 end: self.padding.start,
@@ -302,48 +304,67 @@ impl FheString {
             eof: false,
             result: MatchResult::RawStartIndex,
         };
-    
+
         // let match_pattern = pattern.to_pattern();
         let raw_index = if is_prefix {
             se.find(self, &pattern, match_options)
         } else {
             let rev_s = self.reversed();
-            let rev_find = se.find(&rev_s, &pattern.reversed(), match_options);
+            let rev_find = match pattern {
+                Pattern::Encrypted(p) => {
+                    let rev_p = p.reversed();
+                    se.find(&rev_s, &Pattern::Encrypted(&rev_p), match_options)
+                }
+                Pattern::Clear(ref p) => {
+                    let rev_p = Pattern::Clear(p.chars().rev().collect());
+                    se.find(&rev_s, &rev_p, match_options)
+                }
+            };
+            // let rev_find = se.find(&rev_s, &rev_p, match_options);
             let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
             let p_len = FheInt16::encrypt_trivial(pattern.len() as i16);
             s_len - p_len - rev_find
         };
-    
+
         let found = if is_prefix {
             match &pattern {
-                Pattern::Encrypted(p) => self.starts_with(p.clone()),
+                Pattern::Encrypted(p) => self.starts_with(p),
                 Pattern::Clear(p) => self.starts_with_clear(p),
             }
         } else {
             match &pattern {
-                Pattern::Encrypted(p) => self.ends_with(p.clone()),
+                Pattern::Encrypted(p) => self.ends_with(p),
                 Pattern::Clear(p) => self.ends_with_clear(p),
             }
         };
-    
+
         let end_index = if is_prefix {
             raw_index + FheInt16::encrypt_trivial(pattern.len() as i16 - 1)
         } else {
             raw_index
         };
-    
+
         Self {
             chars: self
                 .chars
                 .par_iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let must_zero = found.clone() & if is_prefix { end_index.ge(i as i16) } else { end_index.le(i as i16) };
+                    let must_zero = found.clone()
+                        & if is_prefix {
+                            end_index.ge(i as i16)
+                        } else {
+                            end_index.le(i as i16)
+                        };
                     c.byte.to_owned() & (FheUint8::cast_from(!must_zero) * &fhe_max_u8)
                 })
                 .map(|b| FheAsciiChar { byte: b.to_owned() })
                 .collect(),
-            padding: if is_prefix { *self.padding.clone().start(true) } else { *self.padding.clone().end(true) },
+            padding: if is_prefix {
+                *self.padding.clone().start(true)
+            } else {
+                *self.padding.clone().end(true)
+            },
         }
     }
 }
@@ -355,7 +376,7 @@ impl std::ops::Add for FheString {
         let mut chars: Vec<FheAsciiChar> = vec![];
         chars.extend(self.chars.clone());
         chars.extend(other.chars.clone());
-        let padding: PaddingOptions = *PaddingOptions::default()
+        let padding = *Padding::default()
             .start(self.padding.start)
             .middle(
                 self.padding.middle | self.padding.end | other.padding.start | other.padding.middle,
@@ -386,14 +407,6 @@ impl FheAsciiChar {
             .unwrap()
     }
 
-    pub fn eq(&self, rhs: Self) -> FheBool {
-        self.byte.eq(&rhs.byte)
-    }
-
-    pub fn ne(&self, rhs: Self) -> FheBool {
-        self.byte.ne(&rhs.byte)
-    }
-
     fn to_upper(&self) -> Self {
         Self {
             byte: &self.byte
@@ -410,13 +423,13 @@ impl FheAsciiChar {
 }
 
 #[derive(Default, Debug, Copy, Clone)]
-pub struct PaddingOptions {
+pub struct Padding {
     pub start: bool,
     pub middle: bool,
     pub end: bool,
 }
 
-impl PaddingOptions {
+impl Padding {
     // Methods to set individual flags
     pub fn start(&mut self, value: bool) -> &mut Self {
         self.start = value;
