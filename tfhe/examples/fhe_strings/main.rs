@@ -67,6 +67,7 @@ fn main() {
     .into_iter()
     .for_each(|function| check_result_no_arg(&str_client_key, &fhe_str, &clear_str, function));
     check_repeat(&str_client_key, &fhe_str, &clear_str, "repeat");
+
     if args.pattern.is_none() {
         return;
     }
@@ -95,6 +96,7 @@ fn main() {
     }
     common_pattern_fn.extend(["eq", "ne", "eq_ignore_case"]);
     let fhe_pattern = str_client_key.encrypt(&clear_pattern);
+    println!("");
     common_pattern_fn.into_iter().for_each(|function| {
         check_result_enc_pattern(
             &str_client_key,
@@ -280,6 +282,7 @@ fn check_repeat(
         "{0: <20} | {1: <10} | {2: <10} | {3: <10} | {4: <10}",
         function, results_match, duration, std_result, clear_result
     );
+    println!("");
 
     let maxed_enc_u8 = MaxedFheUint8 {
         val: FheUint8::encrypt(2_u8, &client_key.key),

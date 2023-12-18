@@ -133,12 +133,13 @@ impl FheString {
     pub fn ends_with(&self, pattern: &FheString) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
-            sof: false,
-            eof: true,
+            sof: true,
+            eof: false,
             result: MatchResult::Bool,
         };
-        let match_pattern = Pattern::Encrypted(pattern);
-        se.has_match(self, &match_pattern, match_options)
+        let rev_p = pattern.reversed();
+        let match_pattern = Pattern::Encrypted(&rev_p);
+        se.has_match(&self.reversed(), &match_pattern, match_options)
     }
 
     pub fn eq(&self, other: &Self) -> FheBool {
@@ -187,7 +188,6 @@ impl FheString {
     pub fn strip_suffix(&self, pattern: &FheString) -> Self {
         self.strip_helper(Pattern::Encrypted(pattern), false)
     }
-    // --------------------------------------------------------------------------
 
     // ----------------------------------------------------------
     // Functions with clear parameters
@@ -229,12 +229,12 @@ impl FheString {
     pub fn ends_with_clear(&self, pattern: &str) -> FheBool {
         let mut se = SimpleEngine::new();
         let match_options = MatchingOptions {
-            sof: false,
-            eof: true,
+            sof: true,
+            eof: false,
             result: MatchResult::Bool,
         };
-        let match_pattern = Pattern::Clear(pattern.to_string());
-        se.has_match(self, &match_pattern, match_options)
+        let match_pattern = Pattern::Clear(pattern.chars().rev().collect());
+        se.has_match(&self.reversed(), &match_pattern, match_options)
     }
 
     pub fn find_clear(&self, pattern: &str) -> FheInt16 {
@@ -305,22 +305,21 @@ impl FheString {
             result: MatchResult::RawStartIndex,
         };
 
-        // let match_pattern = pattern.to_pattern();
         let raw_index = if is_prefix {
             se.find(self, &pattern, match_options)
         } else {
             let rev_s = self.reversed();
             let rev_find = match pattern {
                 Pattern::Encrypted(p) => {
-                    let rev_p = p.reversed();
-                    se.find(&rev_s, &Pattern::Encrypted(&rev_p), match_options)
+                    let r_p = p.reversed();
+                    let rev_p = Pattern::Encrypted(&r_p);
+                    se.find(&rev_s, &rev_p, match_options)
                 }
                 Pattern::Clear(ref p) => {
                     let rev_p = Pattern::Clear(p.chars().rev().collect());
                     se.find(&rev_s, &rev_p, match_options)
                 }
             };
-            // let rev_find = se.find(&rev_s, &rev_p, match_options);
             let s_len = FheInt16::encrypt_trivial(self.chars.len() as i16);
             let p_len = FheInt16::encrypt_trivial(pattern.len() as i16);
             s_len - p_len - rev_find
