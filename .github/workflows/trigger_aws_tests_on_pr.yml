@@ -24,7 +24,7 @@ jobs:
 
       - name: Launch fast tests
         if: ${{ github.event_name == 'pull_request' }}
-        uses: mshick/add-pr-comment@a65df5f64fc741e91c59b8359a4bc56e57aaf5b1
+        uses: mshick/add-pr-comment@ec328af66588ab8f77cdeb2c264f14aba45bbf59
         with:
           allow-repeats: true
           message: |
@@ -41,7 +41,7 @@ jobs:
       # in case of multiple approvals without new commits in between.
       - name: Launch full tests suite
         if: ${{ github.event_name == 'pull_request_review' && github.event.review.state == 'approved' && !contains(fromJSON(env.LABELS), 'approved') }}
-        uses: mshick/add-pr-comment@a65df5f64fc741e91c59b8359a4bc56e57aaf5b1
+        uses: mshick/add-pr-comment@ec328af66588ab8f77cdeb2c264f14aba45bbf59
         with:
           allow-repeats: true
           message: |
